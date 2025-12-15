@@ -22,64 +22,64 @@
       "path": "solana/programs/bridge/src/common/state/bridge.rs",
       "content": "use anchor_lang::prelude::*;
 
-#[account]
-#[derive(Default)]
-pub struct Bridge {
-    pub version: u64,
-    pub owner: Pubkey,
-    pub base_fee: u64,
-    pub window_start_time: u64,
-    pub gas_used_in_window: u64,
-}
-
-impl Bridge {
-    pub fn refresh_base_fee(&mut self, timestamp: u64, gas_config: &GasConfig) -> u64 {
-        let elapsed = timestamp.saturating_sub(self.window_start_time);
-        if elapsed >= gas_config.gas_price_window_seconds {
-            let new_base_fee = self.calculate_base_fee(gas_config);
-            self.base_fee = new_base_fee;
-            self.window_start_time = timestamp;
-            self.gas_used_in_window = 0;
+        #[account]
+        #[derive(Default)]
+        pub struct Bridge {
+            pub version: u64,
+            pub owner: Pubkey,
+            pub base_fee: u64,
+            pub window_start_time: u64,
+            pub gas_used_in_window: u64,
         }
-        self.base_fee
-    }
 
-    fn calculate_base_fee(&self, gas_config: &GasConfig) -> u64 {
-        let mut new_base_fee = self.base_fee;
-        let gas_target = gas_config.gas_target();
-        if self.gas_used_in_window > gas_target {
-            new_base_fee = self.base_fee.saturating_add(
+        impl Bridge {
+            pub fn refresh_base_fee(&mut self, timestamp: u64, gas_config: &GasConfig) -> u64 {
+                let elapsed = timestamp.saturating_sub(self.window_start_time);
+                if elapsed >= gas_config.gas_price_window_seconds {
+                    let new_base_fee = self.calculate_base_fee(gas_config);
+                    self.base_fee = new_base_fee;
+                    self.window_start_time = timestamp;
+                    self.gas_used_in_window = 0;
+                }
                 self.base_fee
-                    .saturating_mul(self.gas_used_in_window.saturating_sub(gas_target) as u64)
-                    .saturating_div(gas_target as u64)
-                    .saturating_div(gas_config.gas_price_max_change_denominator as u64),
-            );
-        } else {
-            new_base_fee = self.base_fee.saturating_sub(
-                self.base_fee
-                    .saturating_mul(gas_target.saturating_sub(self.gas_used_in_window) as u64)
-                    .saturating_div(gas_target as u64)
-                    .saturating_div(gas_config.gas_price_max_change_denominator as u64),
-            );
-        }
-        if new_base_fee < gas_config.min_gas_price {
-            return gas_config.min_gas_price;
-        }
-        if new_base_fee > gas_config.max_gas_price {
-            return gas_config.max_gas_price;
-        }
-        new_base_fee
-    }
-}
+            }
 
-#[account]
-#[derive(Default)]
-pub struct GasConfig {
-    pub gas_price_window_seconds: u64,
-    pub gas_price_max_change_denominator: u16,
-    pub min_gas_price: u64,
-    pub max_gas_price: u64,
-}",
+            fn calculate_base_fee(&self, gas_config: &GasConfig) -> u64 {
+                let mut new_base_fee = self.base_fee;
+                let gas_target = gas_config.gas_target();
+                if self.gas_used_in_window > gas_target {
+                    new_base_fee = self.base_fee.saturating_add(
+                        self.base_fee
+                            .saturating_mul(self.gas_used_in_window.saturating_sub(gas_target) as u64)
+                            .saturating_div(gas_target as u64)
+                            .saturating_div(gas_config.gas_price_max_change_denominator as u64),
+                    );
+                } else {
+                    new_base_fee = self.base_fee.saturating_sub(
+                        self.base_fee
+                            .saturating_mul(gas_target.saturating_sub(self.gas_used_in_window) as u64)
+                            .saturating_div(gas_target as u64)
+                            .saturating_div(gas_config.gas_price_max_change_denominator as u64),
+                    );
+                }
+                if new_base_fee < gas_config.min_gas_price {
+                    return gas_config.min_gas_price;
+                }
+                if new_base_fee > gas_config.max_gas_price {
+                    return gas_config.max_gas_price;
+                }
+                new_base_fee
+            }
+        }
+
+        #[account]
+        #[derive(Default)]
+        pub struct GasConfig {
+            pub gas_price_window_seconds: u64,
+            pub gas_price_max_change_denominator: u16,
+            pub min_gas_price: u64,
+            pub max_gas_price: u64,
+        }",
       "vulnerable_lines": [
         13,
         23
