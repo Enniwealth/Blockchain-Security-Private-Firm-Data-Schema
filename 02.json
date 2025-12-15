@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_quantstamp_afi_afi001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -34,7 +34,7 @@
   "context_hint": "The vulnerability is timing-based rather than logic-based. The vault correctly calculates share prices at deposit and withdrawal, but the attacker profits from the rate change that occurs between operations. This is enabled by the oracle allowing instant rate updates without delays. The attack requires either mempool visibility (flashbots) or collusion with the oracle provider.",
   "is_vulnerable": true,
   "expert_notes": "This is a sophisticated MEV attack that exploits the oracle's lack of delay mechanisms. While each individual operation is mathematically correct, the combination of deposit → rate update → withdraw within a single block violates the intended invariant that rate changes should affect new deposits prospectively, not retroactively. The fix requires adding temporal constraints (lockup periods or rate-change delays) that prevent profitable extraction."
-}
+},
 
 {
   "id": "gs_quantstamp_afi_afi002",
@@ -67,3 +67,4 @@
   "is_vulnerable": true,
   "expert_notes": "This is a common pitfall when adapting ERC4626 vault patterns to support multiple assets. The vulnerability stems from conflating asset amounts (which vary in decimal places) with vault share amounts (which should always be 18 decimals). Proper fix requires understanding ERC4626's decimal handling pattern: (1) normalize deposits to 18 decimals, (2) perform all calculations in 18-decimal space, (3) convert back to asset decimals for withdrawals. Many protocols have fallen into this trap, including some high-value exploits."
 }
+]

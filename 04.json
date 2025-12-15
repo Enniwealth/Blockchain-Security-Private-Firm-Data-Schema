@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_quantstamp_sequence_seq001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -34,7 +34,7 @@
   "context_hint": "The vulnerability exists because while the TRAILS_INTENT_TYPEHASH includes feeAmount and feeCollector in the type hash definition, the function parameters are not validated to match the signed values. The signature verification (_verifyAndMarkIntent) only checks the overall intent hash but doesn't ensure the actual feeAmount and feeCollector passed to safeTransferFrom match what the user signed. A relayer can compute a valid signature for the original fee terms but then call the function with different fee parameters, and the contract will execute the transfer with the attacker-controlled values.",
   "is_vulnerable": true,
   "expert_notes": "This is a critical authorization bypass where fee parameters can be modified post-signature. The fix requires either: (1) strict parameter validation ensuring the relayer-provided feeAmount and feeCollector match the signature, (2) removing relayer ability to set fee parameters entirely, or (3) using a separate signed fee approval mechanism. Given that feeAmount and feeCollector are already in the type hash, option 1 is the minimal fix: add require(feeAmount == signed_feeAmount && feeCollector == signed_feeCollector) validation."
-}
+},
 
 {
   "id": "gs_quantstamp_sequence_seq002",
@@ -72,4 +72,4 @@
   "context_hint": "The issue stems from inconsistent use of the SafeERC20 wrapper. While the contract imports SafeERC20 and declares 'using SafeERC20 for IERC20', some transfer calls may not benefit from this protection if the code is using raw IERC20 interface calls or if there are version mismatches. Many tokens in production (USDT, USDC on Polygon, some stablecoins) deviate from the standard by returning void. The SafeERC20 library handles this by wrapping calls and checking return data length - if it's 0 (void return), it assumes success; if > 0, it decodes the boolean.",
   "is_vulnerable": true,
   "expert_notes": "This is a classic token compatibility issue common in protocols that interact with multiple ERC-20 implementations. The code shows 'using SafeERC20 for IERC20' on line 12, which should apply the safe methods to all IERC20 instances. However, if the actual compiled bytecode or runtime behavior shows failures with USDT or similar tokens, this indicates either: (1) the using directive is not properly applied at compile time, (2) there are version mismatches between SafeERC20 and the actual implementation, or (3) some transfer paths bypass the SafeERC20 wrapper. The fix is to verify that all token transfer calls use IERC20(token).safeTransferFrom() and that the SafeERC20 library version supports void-returning tokens."
-}
+}]

@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_quantstamp_campre_camp001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -34,4 +34,4 @@
   "context_hint": "This vulnerability exploits the separation of responsibility in LayerZero bridge architecture. The CampTimelockEscrow contract on source chain cannot know what gas is actually required on destination chain. However, it can enforce a minimum based on typical execution costs. The griefing vector exists because release() is permissionless (anyone can call it with any _gaslimit), combined with no validation. The fix is simple: enforce a sensible minimum that covers all normal execution paths.",
   "is_vulnerable": true,
   "expert_notes": "This is a design-level vulnerability in cross-chain systems where source-chain contracts delegate execution to destination-chain actors without enforcing minimum requirements. The fix is straightforward (add a constant and one require statement) but the impact can be significant for user experience. In production, Camp likely estimates MIN_GAS_LIMIT through testing the Camp OFT contract's lzReceive() function. The vulnerability appears in the re-audit because the original bridging mechanism (batch processing) was removed in favor of user-initiated release, changing the threat model."
-}
+}]

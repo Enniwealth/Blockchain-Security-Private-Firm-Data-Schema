@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_spearbit_kinetiq_001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -39,7 +39,7 @@
   "context_hint": "This vulnerability stems from a mismatch between the bond mechanism design and the unwinding lifecycle. The protocol correctly prevents the operator from accessing the bond during normal operations by minting exLST to the ExManager contract instead of the operator. However, it fails to provide a redemption path when the contract unwinds and ExManager is no longer needed. The fix requires adding a recovery function that only works in WOUND_DOWN phase.",
   "is_vulnerable": true,
   "expert_notes": "This is a critical economic vulnerability in a protocol where operators must post significant bonds. In the permissioned version, the bond is 'relatively small', but the permissionless version allows 10% of 500K HYPE = 50K HYPE bonds per operator. With multiple operators and multiple market instances, the total locked value could be substantial. The fix is straightforward: add a function that allows the operator to burn their exLST shares from ExManager after unwinding and claim the underlying HYPE."
-}
+},
 
 {
   "id": "gs_spearbit_kinetiq_002",
@@ -77,4 +77,4 @@
   "context_hint": "This vulnerability exploits the gap between the intended 7-day settlement delay and the actual timing of L1 operations. HyperCore enforces the 24-hour constraint at the L1 level, but the L2 contract has no mechanism to track or enforce this constraint on-chain. The withdrawal delay check uses the original queue timestamp, which doesn't account for retries that may happen days later. The fix requires either enforcing a cooldown on processL1Operations() or updating withdrawal timestamps when operations are retried.",
   "is_vulnerable": true,
   "expert_notes": "The likelihood is rated as Low because operators are trusted and expected to follow operational discipline. However, the scenario becomes more likely if: (1) L1 congestion causes frequent operation failures, (2) Multiple operators process operations independently, (3) Automated systems retry without proper delays. The impact is High because users can confirm withdrawals before funds are fully settled on L1, potentially receiving unsettled assets. The fix is straightforward: add a cooldown check to processL1Operations() or update withdrawal timestamps on retries."
-}
+}]

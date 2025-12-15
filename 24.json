@@ -1,0 +1,164 @@
+[
+  {
+    "id": "gs_cantina_capricorn_pamm_004",
+    "report_url": "https://cantina.xyz/portfolio/fb079d70-4178-4a53-ac8a-88174dcff12b",
+    "project_name": "Capricorn pAMM",
+    "github_url": "https://github.com/capricorn-protocol/pamm",
+    "language": "solidity",
+    "chain": "ethereum",
+    "contest_date": "2025-10-11",
+    "vulnerability_type": "arithmetic_error",
+    "severity": "high",
+    "difficulty_tier": 3,
+    "context": "pricing",
+    "is_vulnerable": true,
+    "title": "Catastrophic Cancellation in _balancing and _smallInv Near Equilibrium Causes Reverts",
+    "description": "When the pool is near equilibrium (price * reserveX ≈ reserveY), the exact-in swap path routes through _balancing to compute the first tranche. Both _balancing and _smallInv use the unstable quadratic form that suffers catastrophic cancellation when sqrt(B^2 + x) ≈ B due to tiny x. PRB-Math floors the sqrt result, causing (sqrtTerm - B) to underflow in fixed-point arithmetic, triggering panic(0x11). Valid swaps revert whenever reserves are sufficiently close to the oracle ratio, creating a denial-of-service window around the invariant.",
+    "primary_file": {
+      "name": "PricingEngine.sol",
+      "path": "contracts/PricingEngine.sol",
+      "lines": "290-310",
+      "content": "function _balancing(\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 c,\n    UD60x18 price,\n    UD60x18 mult\n) internal pure returns (UD60x18, UD60x18) {\n    UD60x18 tX = reserveY / price;\n    UD60x18 A = (convert(2) - mult) * price;\n    UD60x18 B = ((convert(2) * c - UNIT) * reserveY) + (price * reserveX);\n    UD60x18 nC = c * (reserveY - price * reserveX) * tX;\n    \n    // BUG: Catastrophic cancellation here\n    // When nC is tiny (pool at equilibrium), 4*A*nC is also tiny\n    // sqrt(B^2 + tiny) ≈ B (rounded down by PRB-Math)\n    // Then: (sqrtTerm - B) underflows in UD60x18 (unsigned fixed-point)\n    \n    UD60x18 tmp = B.pow(convert(2)) + (convert(4) * A * nC);\n    UD60x18 sqrtTerm = tmp.sqrt();  // ← can round down to B\n    \n    // VULNERABLE: Subtraction of nearly-equal large numbers\n    // If sqrtTerm == B (due to rounding), this underflows\n    UD60x18 amountIn = (sqrtTerm - B) / (convert(2) * A);\n    // panic(0x11): underflow panic\n    \n    UD60x18 amountOut = reserveY - price * (reserveX + amountIn);\n    \n    return (amountIn, amountOut);\n}\n\n// REVERT SCENARIO:\n// Pool state:\n// - reserveX = 1000\n// - reserveY = 2000\n// - price = 2 (price * reserveX = Y)\n// - c = 1, mult = 1\n//\n// Calculation:\n// tX = 2000 / 2 = 1000\n// A = (2 - 1) * 2 = 2\n// B = ((2 - 1) * 2000) + (2 * 1000) = 4000\n// nC = 1 * (2000 - 2*1000) * 1000 = 1 * 0 * 1000 = 0  ← TINY\n//\n// tmp = 4000^2 + 0 = 16,000,000\n// sqrtTerm = sqrt(16,000,000) = 4000 ← rounds down to B\n//\n// amountIn = (4000 - 4000) / 4 = 0 / 4 = 0\n// This works with 0, but near-equilibrium:\n//\n// Pool state (slight imbalance):\n// - reserveX = 1000\n// - reserveY = 2001\n// - price = 2\n// - price * reserveX = 2000, but Y = 2001 (slightly quote-heavy)\n//\n// nC = 1 * (2001 - 2000) * 1000 = 1 * 1 * 1000 = 1000\n// tmp = 4000^2 + 4*2*1000 = 16,000,000 + 8,000 = 16,008,000\n// sqrtTerm = sqrt(16,008,000) ≈ 4000.999... but rounds down to 4000 ← BUG\n// sqrtTerm - B = 4000 - 4000 = 0 (should be ~0.999)\n//\n// Or with even larger nC:\n// nC = 100,000\n// tmp = 16,000,000 + 800,000 = 16,800,000\n// sqrtTerm = sqrt(16,800,000) ≈ 4098.7...\n// amountIn = (4098.7 - 4000) / 4 = 98.7 / 4 ≈ 24.67\n//\n// With UD60x18 fixed-point (18 decimals):\n// Large numbers suffer rounding\n// sqrtTerm might round to exactly 4000 when it should be 4000.001\n// Subtraction then tries to do: 4000e18 - 4000e18 = 0\n// Or if rounding makes sqrtTerm < B: underflow!\n//\n// panic(0x11) is thrown: Arithmetic underflow"
+    },
+    "context_files": [
+      {
+        "name": "PRB-Math sqrt Behavior",
+        "path": "lib/prb-math/UD60x18.sol",
+        "relevance": "Shows how sqrt rounds in fixed-point",
+        "content": "// PRB-Math UD60x18 sqrt implementation:\n// Input: 128-bit fixed-point (18 decimals)\n// Output: rounded down\n//\n// When computing sqrt of numbers close to perfect squares:\n// sqrt(4000e18^2 + 1) will round down to 4000e18\n// This is mathematically correct for rounding (floor)\n// But it breaks subtraction with nearly-equal terms\n//\n// Example with floored output:\n// A = 16000000e18  (16,000,000 in 18 decimals)\n// B = 16000001e18  (16,000,001)\n// sqrt(A) = 4000e18 (exact)\n// sqrt(B) = sqrt(16000001e18) ≈ 4000.000124... → rounds down to 4000e18\n//\n// So both sqrt(A) and sqrt(B) return 4000e18\n// Then (4000e18 - 4000e18) = 0 in subtraction\n// But mathematically sqrt(B) > sqrt(A)\n//\n// The loss of precision causes:\n// 1. Incorrect results (underestimated amountIn)\n// 2. Potential underflow if rounding goes wrong\n// 3. panic(0x11) in arithmetic operations"
+      },
+      {
+        "name": "Exact-Out Path with Same Issue",
+        "path": "contracts/PricingEngine.sol",
+        "relevance": "Shows _smallInv has the same problem",
+        "content": "function _smallInv(\n    UD60x18 amountOut,\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 mult\n) internal pure returns (UD60x18) {\n    // For exact-out (reverse direction)\n    // Uses two different quadratic forms depending on mult\n    \n    if (convert(1) < mult) {\n        // mult > 1 case: subtraction form\n        // (sqrt(B^2 - 4*nA*nC) - B) / (2*nA)\n        // Also suffers catastrophic cancellation near equilibrium\n    } else {\n        // mult <= 1 case: same form as _balancing\n        // (sqrt(B^2 + 4*A*nC) - B) / (2*A)\n        // VULNERABLE to same underflow\n    }\n}\n\n// Both paths have the problem:\n// - Exact-in via _balancing ← unstable near equilibrium\n// - Exact-in via _smallInv (mult < 1) ← same instability\n// - Exact-out via _smallInv (mult <= 1) ← same instability\n// \n// Collectively, most swaps fail near equilibrium"
+      }
+    ],
+    "call_flow": [
+      "1. User calls PAMMPool.quoteExactIn(amountIn)",
+      "2. Pool is near equilibrium: price*reserveX ≈ reserveY",
+      "3. Routes to PricingEngine.exactIn",
+      "4. exactIn routes to _balancing (quote-heavy path)",
+      "5. _balancing computes nC = c * (reserveY - price*reserveX) * tX",
+      "6. nC is tiny (pool is nearly balanced)",
+      "7. tmp = B^2 + 4*A*nC with tiny 4*A*nC",
+      "8. sqrt(tmp) rounds down to B due to PRB-Math flooring",
+      "9. Attempts: amountIn = (sqrtTerm - B) / (2*A)",
+      "10. sqrtTerm == B (both 4000e18 from rounding)",
+      "11. Subtraction: 4000e18 - 4000e18",
+      "12. If rounding artifacts: might compute negative → underflow",
+      "13. panic(0x11) exception thrown",
+      "14. Transaction reverts with low-level panic",
+      "15. Quote shows opaque error to user"
+    ],
+    "context_hint": "This is a numerical stability issue at the boundary of the safe domain. The unstable quadratic form breaks down near equilibrium where the tiny discriminant is dominated by rounding effects. The fix requires reformulating to keep intermediate values bounded.",
+    "expert_notes": "Cantina identified this through property-based fuzzing. The issue manifests as intermittent reverts when pool reserves are close to oracle equilibrium. Routers and aggregators see opaque panic messages. The fix is to use the numerically stable form that avoids building B^2 and instead uses sqrt(1 + small_ratio).",
+    "fix_description": "Refactor _balancing and _smallInv to use the numerically stable quadratic identity that avoids catastrophic cancellation. Replace (sqrt(B^2 + 4*A*nC) - B) / (2*A) with (2*nC) / (B * (sqrt(1 + 4*A*nC/B^2) + 1)).",
+    "fix_code": "function _balancing(\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 c,\n    UD60x18 price,\n    UD60x18 mult\n) internal pure returns (UD60x18, UD60x18) {\n    UD60x18 tX = reserveY / price;\n    UD60x18 A = (convert(2) - mult) * price;\n    UD60x18 B = ((convert(2) * c - UNIT) * reserveY) + (price * reserveX);\n    UD60x18 nC = c * (reserveY - price * reserveX) * tX;\n    \n    // FIXED: Use stable quadratic solver\n    UD60x18 amountIn = _safeQuadratic(A, B, nC);\n    UD60x18 amountOut = reserveY - price * (reserveX + amountIn);\n    \n    return (amountIn, amountOut);\n}\n\nfunction _safeQuadratic(\n    UD60x18 A,\n    UD60x18 B,\n    UD60x18 nC\n) internal pure returns (UD60x18) {\n    // FIXED: Stable form using sqrt(1 + gamma)\n    // This avoids building B^2 and keeps sqrt argument near 1\n    \n    UD60x18 fourAnC = convert(4) * A * nC;\n    \n    // Compute gamma = (4*A*nC) / B^2 using sequential divisions\n    UD60x18 gamma = fourAnC / B;\n    gamma = gamma / B;  // Now gamma = 4*A*nC / B^2\n    \n    // Compute sqrt(1 + gamma)\n    // This always has a stable argument (stays near 1)\n    UD60x18 sqrtArg = UNIT + gamma;\n    UD60x18 sqrtTerm = sqrtArg.sqrt();\n    \n    // Denominator: B * (sqrt(1 + gamma) + 1)\n    UD60x18 denom = B * (sqrtTerm + UNIT);\n    \n    // Result: (2 * nC) / denom\n    // This is algebraically equivalent to the original formula\n    // but numerically stable\n    return (convert(2) * nC) / denom;\n}\n\nfunction _smallInv(\n    UD60x18 amountOut,\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 mult\n) internal pure returns (UD60x18) {\n    // FIXED: For mult <= 1, use stable form\n    if (convert(1) > mult) {\n        // mult < 1 case: use stable quadratic\n        UD60x18 A = (convert(2) - mult) * price;\n        UD60x18 B = ...; // compute as before\n        UD60x18 nC = ...; // compute as before\n        return _safeQuadratic(A, B, nC);\n    } else {\n        // mult > 1 case: keep alternative form\n        // This one uses subtraction B - sqrt(...) which is stable\n        // because sqrt(...) < B in this regime\n    }\n}\n\n// With stable form:\n// - Near equilibrium with nC tiny:\n//   - gamma = tiny / B^2 = very_tiny\n//   - sqrt(1 + very_tiny) ≈ 1 + very_tiny/2 (no rounding issues)\n//   - denom = B * 2\n//   - amountIn = 2*nC / (2*B) = nC / B (correct)\n// - No subtraction of nearly-equal numbers\n// - No underflow panic\n// - All equilibrium swaps work reliably"
+  },
+  {
+    "id": "gs_cantina_capricorn_pamm_005",
+    "report_url": "https://cantina.xyz/portfolio/fb079d70-4178-4a53-ac8a-88174dcff12b",
+    "project_name": "Capricorn pAMM",
+    "github_url": "https://github.com/capricorn-protocol/pamm",
+    "language": "solidity",
+    "chain": "ethereum",
+    "contest_date": "2025-10-11",
+    "vulnerability_type": "arithmetic_error",
+    "severity": "high",
+    "difficulty_tier": 3,
+    "context": "pricing",
+    "is_vulnerable": true,
+    "title": "Discriminant Overflow in _balancing sqrt on Large Pools Causes Persistent DoS",
+    "description": "In the quote-heavy path of exactIn, _balancing builds a large discriminant by squaring B directly: tmp = B.pow(2) + (4*A*nC). When reserves are very large or c is substantial, B itself becomes huge. Squaring B via B.pow(2) crosses PRB-Math UD60x18's maximum input for sqrt. The sqrt call then reverts with PRBMath_UD60x18_Sqrt_Overflow, causing every exact-in swap in the quote-heavy branch to revert. Since this depends only on scale, the condition can persist across blocks, effectively denying service until reserves shrink or parameters change.",
+    "primary_file": {
+      "name": "PricingEngine.sol",
+      "path": "contracts/PricingEngine.sol",
+      "lines": "292-305",
+      "content": "function _balancing(\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 c,\n    UD60x18 price,\n    UD60x18 mult\n) internal pure returns (UD60x18, UD60x18) {\n    UD60x18 tX = reserveY / price;\n    UD60x18 A = (convert(2) - mult) * price;\n    UD60x18 B = ((convert(2) * c - UNIT) * reserveY) + (price * reserveX);\n    UD60x18 nC = c * (reserveY - price * reserveX) * tX;\n    \n    // BUG: Building B^2 can overflow the sqrt domain\n    // For large reserveY and/or large c, B is huge\n    // B.pow(2) then exceeds max input for sqrt\n    // \n    // PRB-Math UD60x18 max input for sqrt: ~7.9 * 10^55 (about 2^192)\n    // \n    // When reserves are very large:\n    // B ≈ c * reserveY + price * reserveX\n    // For c=1, price=1, reserveY=10^18, reserveX=10^18:\n    // B ≈ 2 * 10^18\n    // B^2 ≈ 4 * 10^36 ← OK, under limit\n    // \n    // For c=1, price=1, reserveY=10^27, reserveX=10^27:\n    // B ≈ 2 * 10^27\n    // B^2 ≈ 4 * 10^54 ← NEAR limit\n    // \n    // For c=1, price=1, reserveY=10^30, reserveX=10^30:\n    // B ≈ 2 * 10^30\n    // B^2 ≈ 4 * 10^60 ← EXCEEDS limit, reverts with overflow\n    \n    UD60x18 tmp = B.pow(convert(2)) + (convert(4) * A * nC);\n    // If B^2 is huge, this line reverts: panic(0x32) - Arithmetic overflow\n    \n    UD60x18 sqrtTerm = tmp.sqrt();\n    UD60x18 amountIn = (sqrtTerm - B) / (convert(2) * A);\n    UD60x18 amountOut = reserveY - price * (reserveX + amountIn);\n    \n    return (amountIn, amountOut);\n}\n\n// OVERFLOW SCENARIO:\n// Pool state:\n// - reserveX = 10^30 token0\n// - reserveY = 10^30 token1\n// - c = 1\n// - price = 1\n// - Reasonable configuration (equal reserves, c=1)\n//\n// Calculation:\n// B = ((2*1 - 1)*10^30) + (1*10^30) = (1*10^30) + (1*10^30) = 2*10^30\n// tmp = B^2 + ... = (2*10^30)^2 + ...\n//     = 4*10^60 + ...\n// \n// MAX UD60x18 sqrt input: ~7.9 * 10^54\n// tmp = 4*10^60 >> 7.9*10^54\n//\n// sqrt(4*10^60) → PRBMath_UD60x18_Sqrt_Overflow\n// panic(0x32): Arithmetic overflow\n// Transaction reverts\n//\n// Impact:\n// - User tries to swap: REVERT (unexpected)\n// - Router tries to get quote: REVERT (quote fails)\n// - No indication why (opaque low-level panic)\n// - Condition persists until reserves shrink\n// - One-directional DoS on quote-heavy path\n//\n// When does this happen:\n// - Large AMM pools (billions USD)\n// - High c values (amplifies reserve magnitude)\n// - High oracle prices\n// - Scaling above 10^27 reserves"
+    },
+    "context_files": [
+      {
+        "name": "PRB-Math sqrt Limits",
+        "path": "lib/prb-math/UD60x18.sol",
+        "relevance": "Documents sqrt input limits",
+        "content": "// PRB-Math UD60x18 sqrt domain:\n// Maximum safe input: MAX_UD60x18 / 4 ≈ 1.925 * 10^58 / 4 ≈ 4.8 * 10^57\n// \n// Actually, for sqrt to not overflow, input must be <= 2^192\n// In fixed-point UD60x18 (with 18 decimal places):\n// Maximum input for sqrt: ~7.9 * 10^54 (approximately 2^192 / 10^18)\n// \n// If you try to sqrt a number larger than this:\n// PRBMath_UD60x18_Sqrt_Overflow is thrown\n// \n// Examples:\n// sqrt(1e54) → OK\n// sqrt(1e55) → OK\n// sqrt(1e56) → MIGHT OVERFLOW (depends on coefficient)\n// sqrt(1e60) → DEFINITELY OVERFLOW\n//\n// Building B^2 directly:\n// - If B is 10^30: B^2 = 10^60 (OVERFLOW)\n// - If B is 10^28: B^2 = 10^56 (might overflow)\n// - If B is 10^27: B^2 = 10^54 (borderline)\n// - If B is 10^26: B^2 = 10^52 (safe)\n//\n// The stable form avoids building B^2:\n// - Instead computes sqrt(1 + small_ratio)\n// - small_ratio is always < 1\n// - sqrt(1 + small) is always safe\n// - Never overflows"
+      },
+      {
+        "name": "Stable Form Avoids Overflow",
+        "path": "reference/capricorn_sqrt_overflow.md",
+        "relevance": "Shows how stable form prevents overflow",
+        "content": "COMPARISON: Unstable vs Stable Forms\n\nWith large reserves (B = 2*10^30):\n\nUNSTABLE FORM:\n1. tmp = B.pow(2) = (2*10^30)^2 = 4*10^60 ← HUGE\n2. sqrt(4*10^60) → OVERFLOW (exceeds limit)\n3. Transaction reverts\n\nSTABLE FORM:\n1. ratio = 4*A*nC / B^2\n   = small_value / (4*10^60)\n   = very_tiny (e.g., 10^-20)\n2. sqrtArg = 1 + tiny = 1.0...001 ← SMALL\n3. sqrt(1.0...001) ≈ 1 ← NO OVERFLOW\n4. denom = B * (sqrtTerm + 1) ← NORMAL SIZE\n5. amountIn = 2*nC / denom ← WORKS\n\nKey insight:\n- Unstable form builds B^2 → huge intermediate\n- Stable form divides by B^2 → keeps everything bounded\n- Mathematical result is identical\n- But numerical range is completely different\n\nThe reformulation:\nOriginal: (sqrt(B^2 + 4*A*nC) - B) / (2*A)\n Stable: (2*nC) / (B * (sqrt(1 + 4*A*nC/B^2) + 1))\n\nWhy stable works:\n- Numerator: 2*nC (reasonable size)\n- Denominator: B * (sqrt(1 + tiny) + 1) ≈ B * 2\n- Division: small / medium = reasonable\n- No intermediate explosions"
+      }
+    ],
+    "call_flow": [
+      "1. Large pool with reserveX ≈ 10^30, reserveY ≈ 10^30",
+      "2. User calls swap with large input",
+      "3. Routes to _balancing (quote-heavy path)",
+      "4. Calculates: B = ((2*c - 1)*reserveY) + (price*reserveX)",
+      "5. With large reserves: B ≈ 10^30 * (2*c)",
+      "6. Attempts: tmp = B.pow(2)",
+      "7. tmp = (10^30)^2 = 10^60 ← EXCEEDS MAX",
+      "8. PRB-Math sqrt rejects input > ~10^54",
+      "9. Throws: PRBMath_UD60x18_Sqrt_Overflow",
+      "10. Transaction reverts with panic(0x32)",
+      "11. All quote-heavy swaps fail on this pool",
+      "12. Condition persists until reserves drop",
+      "13. Protocol is effectively DoS'd in one direction"
+    ],
+    "context_hint": "This is a mathematical overflow issue that affects only large-scale pools. The stable quadratic form avoids building the huge intermediate B^2 by factoring out the division.",
+    "expert_notes": "Cantina identified this through scale testing. The issue only manifests with large reserve values but then persists until reserves drop or parameters change. The fix is to use the stable form that keeps all intermediate values bounded.",
+    "fix_description": "Replace the direct B.pow(2) with the stable form that divides by B twice instead, keeping all intermediates bounded.",
+    "fix_code": "function _balancing(\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 c,\n    UD60x18 price,\n    UD60x18 mult\n) internal pure returns (UD60x18, UD60x18) {\n    UD60x18 tX = reserveY / price;\n    UD60x18 A = (convert(2) - mult) * price;\n    UD60x18 B = ((convert(2) * c - UNIT) * reserveY) + (price * reserveX);\n    UD60x18 nC = c * (reserveY - price * reserveX) * tX;\n    \n    // FIXED: Use numerically stable form\n    UD60x18 amountIn = _safeQuadratic(A, B, nC);\n    UD60x18 amountOut = reserveY - price * (reserveX + amountIn);\n    \n    return (amountIn, amountOut);\n}\n\nfunction _safeQuadratic(\n    UD60x18 A,\n    UD60x18 B,\n    UD60x18 nC\n) internal pure returns (UD60x18) {\n    // FIXED: Avoid building B^2\n    // Instead: compute ratio = 4*A*nC / B^2 using two divisions\n    \n    UD60x18 fourAnC = convert(4) * A * nC;\n    \n    // Divide twice instead of squaring B\n    UD60x18 ratio = fourAnC / B;     // First division\n    ratio = ratio / B;                // Second division → ratio = 4*A*nC / B^2\n    \n    // Now ratio is always small (< 1)\n    // sqrt(1 + small_ratio) stays in safe domain\n    UD60x18 sqrtTerm = (UNIT + ratio).sqrt();  // Always safe\n    \n    // Final calculation\n    UD60x18 denom = B * (sqrtTerm + UNIT);\n    return (convert(2) * nC) / denom;\n}\n\n// With fix and large reserves (B = 2*10^30):\n// 1. fourAnC = reasonable size\n// 2. ratio = fourAnC / (2*10^30) = small\n// 3. ratio = ratio / (2*10^30) = very_tiny\n// 4. (UNIT + very_tiny).sqrt() = stable (no overflow)\n// 5. denom = 2*10^30 * 2 = 4*10^30\n// 6. Result = reasonable / 4*10^30 = reasonable\n// 7. No overflow, transaction succeeds"
+  },
+  {
+    "id": "gs_cantina_capricorn_pamm_006",
+    "report_url": "https://cantina.xyz/portfolio/fb079d70-4178-4a53-ac8a-88174dcff12b",
+    "project_name": "Capricorn pAMM",
+    "github_url": "https://github.com/capricorn-protocol/pamm",
+    "language": "solidity",
+    "chain": "ethereum",
+    "contest_date": "2025-10-11",
+    "vulnerability_type": "arithmetic_error",
+    "severity": "medium",
+    "difficulty_tier": 2,
+    "context": "pricing",
+    "is_vulnerable": true,
+    "title": "EXP Rebalancing Unsafe Exponent Bound Causes Swaps to Revert When Imbalance Exceeds Threshold",
+    "description": "In the Exponential rebalancing class, the spread multiplier is computed as exp = (eps - UNIT) / rebalParam1 followed by mult = 2^exp. The max guard checks if exp >= 196 to prevent overflow, but PRB-Math's exp2 function actually supports a maximum input of ~192, not 196. When configurations have small rebalParam1 (making spreads reactive) and moderate pool skew, exp can fall in the range [192, 196). The guard doesn't trigger, exp2 is called with an out-of-bounds exponent, and PRB-Math reverts with PRBMath_UD60x18_Exp2_InputTooBig. Once the pool's imbalance drives exp into this window, every swap in the base-heavy direction reverts, bricking the pool until parameters or state change.",
+    "primary_file": {
+      "name": "PricingEngine.sol",
+      "path": "contracts/PricingEngine.sol",
+      "lines": "396-410",
+      "content": "function _mult(\n    UD60x18 reserveX,\n    UD60x18 reserveY,\n    UD60x18 price,\n    UD60x18 rebalParam0,\n    UD60x18 rebalParam1,\n    RebalClass rebalClass\n) internal pure returns (UD60x18) {\n    UD60x18 eps;\n    \n    if (zeroForOne) {\n        eps = (reserveX * price + reserveY) / (convert(2) * reserveY);\n    } else {\n        eps = (reserveY / price + reserveX) / (convert(2) * reserveX);\n    }\n    \n    if (rebalClass == RebalClass.EXPONENTIAL) {\n        UD60x18 base = convert(2);\n        \n        // BUG: Incorrect guard value\n        // PRB-Math exp2 max input: ~192 * 1e18\n        // Guard uses: 196 * 1e18 (too high!)\n        \n        UD60x18 exp = (eps - UNIT) / rebalParam1;\n        \n        if (exp >= convert(196)) {  // BUG: Should be 192, not 196\n            // Only triggers for exp >= 196\n            mult = rebalParam0;  // Saturate to max\n        } else {\n            // VULNERABLE: Can call exp2 with input in [192, 196)\n            mult = base.pow(exp);  // exp2(exp) in PRB-Math\n        }\n    }\n}\n\n// REVERT SCENARIO:\n// Configuration:\n// - rebalParam1 = 0.5e18 (small, makes spreads reactive)\n// - eps = 2.0e18 (pool is 2x unbalanced)\n//\n// Calculation:\n// exp = (2.0e18 - 1e18) / 0.5e18\n//     = 1.0e18 / 0.5e18\n//     = 2.0e18 * 1e18 / 0.5e18\n//     = 2.0 (as dimensionless number)\n// In actual calculation: exp = 2.0e18 * 1e18 / 0.5e18 = 4.0e18\n// Hmm, let me recalculate with proper units\n//\n// Actually with fixed-point:\n// rebalParam1 is in 1e18 units\n// exp = (eps - UNIT) / rebalParam1\n//     = (2e18 - 1e18) / (0.5e18)\n//     = 1e18 / (0.5e18)\n//     = 2\n// But stored as: exp = 2e18 (in fixed-point)\n//\n// If rebalParam1 = 0.1e18 (very small):\n// exp = 1e18 / (0.1e18) = 10e18 (in fixed-point) = 10 (numerically)\n//\n// For exp2(10): should compute 2^10 = 1024, OK\n//\n// For exp2(192): should compute 2^192\n// For exp2(193): overflows PRB-Math limit\n// For exp2(196): DEFINITELY overflows\n//\n// With small rebalParam1, exp can grow quickly:\n// rebalParam1 = 0.05e18\n// eps = 10e18 (pool very imbalanced)\n// exp = 9e18 / (0.05e18) = 180e18 = 180\n// exp2(180) OK (under 192)\n//\n// rebalParam1 = 0.05e18\n// eps = 10.5e18\n// exp = 9.5e18 / (0.05e18) = 190e18 = 190\n// exp2(190) OK (under 192)\n//\n// rebalParam1 = 0.05e18\n// eps = 10.6e18\n// exp = 9.6e18 / (0.05e18) = 192e18 = 192\n// exp2(192) ← BORDERLINE, might work\n//\n// rebalParam1 = 0.05e18\n// eps = 10.75e18\n// exp = 9.75e18 / (0.05e18) = 195e18 = 195\n// Guard: 195 >= 196? NO\n// Call: exp2(195) ← OVERFLOWS (exceeds max ~192)\n// Revert: PRBMath_UD60x18_Exp2_InputTooBig\n//\n// Result:\n// Pool becomes imbalanced\n// exp reaches [192, 196) range\n// Every base-heavy swap reverts\n// Pool is bricked until state changes"
+    },
+    "context_files": [
+      {
+        "name": "PRB-Math exp2 Limits",
+        "path": "lib/prb-math/UD60x18.sol",
+        "relevance": "Documents actual exp2 bounds",
+        "content": "// PRB-Math UD60x18 exp2 function:\n// Computes 2^x for UD60x18 fixed-point x\n// \n// Maximum safe input: ~192 * 10^18\n// (corresponding to 2^192 ≈ 6.3 * 10^57)\n//\n// Inputs >= 193 * 10^18 cause overflow\n// \n// Guard value should be 192, not 196\n// The discrepancy causes a 4-unit buffer zone [192, 196)\n// where exp2 overflows but the guard doesn't catch it\n//\n// Affected configurations:\n// - rebalParam1 < 1 (reactive spreads)\n// - Pool imbalance high (eps > ~10)\n// - Gap between guard (196) and actual limit (192)\n//\n// Example problematic config:\n// rebalParam1 = 0.05\n// Guard catches: exp >= 196\n// Actual limit: exp > 192\n// Overlap: [192, 196) → no guard, but overflows"
+      }
+    ],
+    "call_flow": [
+      "1. Pool configured with EXPONENTIAL rebalancing",
+      "2. rebalParam1 = 0.05e18 (small value)",
+      "3. Pool gradually becomes imbalanced (eps increases)",
+      "4. When eps reaches ~10.75e18:",
+      "5. _mult calculates: exp = (10.75 - 1) / 0.05 = 195",
+      "6. Guard checks: 195 >= 196? NO (guard doesn't trigger)",
+      "7. Calls: base.pow(195) where base=2",
+      "8. Delegates to exp2(195)",
+      "9. PRB-Math checks max input: 195 > 192? YES",
+      "10. Throws: PRBMath_UD60x18_Exp2_InputTooBig",
+      "11. Transaction reverts",
+      "12. Every swap in base-heavy direction fails",
+      "13. Pool is functional only in one direction",
+      "14. Remains broken until configuration changes"
+    ],
+    "context_hint": "This is a boundary condition bug. The guard value is off by 4 units from the actual PRB-Math limit. The fix is trivial: change 196 to 192.",
+    "expert_notes": "Cantina identified this through property testing with varying rebalParam1 values. The issue is subtle because it requires specific combinations of parameters and pool state. The fix is straightforward but critical.",
+    "fix_description": "Lower the exponent guard from 196 to 192 to match PRB-Math's actual exp2 input limit.",
+    "fix_code": "function _mult(...) internal pure returns (UD60x18) {\n    // ...\n    if (rebalClass == RebalClass.EXPONENTIAL) {\n        UD60x18 base = convert(2);\n        UD60x18 exp = (eps - UNIT) / rebalParam1;\n        \n        // FIXED: Use correct bound (192 not 196)\n        if (exp >= convert(192)) {\n            mult = rebalParam0;  // Saturate\n        } else {\n            mult = base.pow(exp);  // Safe to call exp2\n        }\n    }\n}\n\n// With fix:\n// - When exp reaches 192, guard triggers\n// - Saturates mult to rebalParam0 (max spread)\n// - No call to exp2 with out-of-range input\n// - All swaps succeed even with extreme imbalance\n// - Pool remains functional"
+  }
+]

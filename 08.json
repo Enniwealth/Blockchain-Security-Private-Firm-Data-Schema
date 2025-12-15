@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_quantstamp_campnft_camp001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -34,7 +34,7 @@
   "context_hint": "The vulnerability stems from a mismatch between vault creation (during minting) and token ownership changes (via transfer). The contract assumes vault existence when routing payments, but transfers don't trigger vault creation. The fix uses lazy initialization: the first time someone buys access from a token owner, the vault is created if needed. This pattern (factory with getOrCreate) is standard in ERC4626 vaults and other production DeFi contracts.",
   "is_vulnerable": true,
   "expert_notes": "This is a critical fund loss vulnerability in a multi-stage protocol. The root cause is architectural: the protocol separates token ownership from royalty routing without enforcing consistency. The fix is minimal but requires careful testing of the interaction between vault creation and existing approval/transfer logic. Note that this affects ALL token transfers, not just first transfers - if Bob receives token 1 and later transfers it to Charlie, Charlie will also lack a vault."
-}
+},
 
 {
   "id": "gs_quantstamp_campnft_camp002",
@@ -72,7 +72,7 @@
   "context_hint": "This vulnerability chains together three separate issues: (1) lack of term commitment from buyer, (2) missing validation of native tokens for wrapped token payments, (3) exploitable token approvals. The attack surface exists because the marketplace trusts buyAccess() callers to manually ensure terms are as expected, but provides no mechanism to verify this assumption. Camp's private mempool mitigates classic frontrunning, but intentional term manipulation by the owner is still possible.",
   "is_vulnerable": true,
   "expert_notes": "This is a sophisticated economic attack that exploits the interaction between ERC20 approvals and dynamic pricing. The vulnerability has three vectors: (1) direct frontrunning (owner sees transaction in mempool and changes terms), (2) speculative manipulation (owner changes terms anticipating future transactions), (3) approval exploitation (owner learns approval amount and extracts it). The fix requires buyers to commit to expected terms, similar to slippage protection in DEX swaps. This is a critical lesson in cross-contract interactions: when contract A calls functions in contract B, contract A must validate that B's state hasn't changed unexpectedly."
-}
+},
 
 {
   "id": "gs_quantstamp_campnft_camp003",
@@ -110,7 +110,7 @@
   "context_hint": "This vulnerability exploits the contract's attempt to prevent duplicate evidence (noble goal) without accounting for who submitted it. The global mapping treats all evidence hashes as globally unique, but evidence has meaning only in context of the dispute claim. By using sender-specific keys, the contract can prevent an individual from reusing their own evidence while allowing different users to submit the same evidence independently.",
   "is_vulnerable": true,
   "expert_notes": "This is a subtle design flaw in the dispute mechanism. The protocol's intended behavior is: 'prevent duplicate evidence across disputes.' The implementation achieves: 'prevent any use of evidence once seen.' The fix requires distinguishing between 'Alice used hash X' and 'hash X was ever used.' Note that Camp's private mempool mitigates the classic frontrunning attack vector, but IP owners can still intentionally exploit this vulnerability. The tradeoff of allowing per-user evidence reuse is acceptable because evidence inherently carries metadata (content hash, claim details) that prevents meaningless reuse."
-}
+},
 
 {
   "id": "gs_quantstamp_campnft_camp004",
@@ -148,7 +148,7 @@
   "context_hint": "This vulnerability represents a failure to define the intended business logic constraints in code. Every protocol has acceptable ranges for parameters (e.g., minimum subscription duration, maximum fees). Without explicit validation, malicious or careless actors can configure tokens in ways that break the intended behavior. This is a common pattern in DeFi: parameters should have bounds, not just type limits.",
   "is_vulnerable": true,
   "expert_notes": "This is a business logic vulnerability rather than a code execution vulnerability. The contract works as coded, but the code doesn't enforce the protocol's intended constraints. The fix requires product design decisions: what IS the acceptable range for duration, royalty, etc.? Once decided, these should become immutable constants or configurable through governance, not editable per-token without limits. The 11.11% (1/9) royalty cap is mathematically derived from needing to support 8 parent tokens in a derivative chain."
-}
+},
 
 {
   "id": "gs_quantstamp_campnft_camp005",
@@ -186,4 +186,4 @@
   "context_hint": "This vulnerability exploits the lock-in mechanism that makes royalty distributions immutable after minting. While immutability is desired (prevents changing terms on existing minted derivatives), it creates a window for frontrunning exploitation. The contract retrieves parent terms at mint time without allowing the minter to validate them first. This is analogous to MEV attacks on DEX swaps, but in the context of revenue sharing.",
   "is_vulnerable": true,
   "expert_notes": "This attack combines two mechanisms: (1) immutable royalty locking (good for stability, bad for attack resistance) and (2) permissioned term updates (IP owner can change terms). The 11.11% royalty cap fix elegantly addresses this by making the attack unprofitable - even if Mallory increases her royalty to 65%, she's immediately capped at 11.11%, so the frontrun provides no benefit. The alternative fix (expected royalty validation) follows the slippage protection pattern from AMMs but requires UI/SDK changes to calculate expected values. The 11.11% cap is mathematically derived: 8 parents × 11.11% ≈ 89%, leaving space for token owner to receive ~11%."
-}
+}]

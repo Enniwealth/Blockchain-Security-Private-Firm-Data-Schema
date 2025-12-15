@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_quantstamp_startale_sta001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -34,7 +34,7 @@
   "context_hint": "ERC4626 share accounting is fair - attacker gets correct shares at deposit and correct assets at redemption. The vulnerability exists because distribute() uses spot totalAssets() instead of a time-delayed snapshot. This is a sophisticated economic attack that requires understanding both lending pool mechanics and yield distribution formulas. The attacker can execute this profitably multiple times daily with modest capital due to Aave-style 90% LTV.",
   "is_vulnerable": true,
   "expert_notes": "This vulnerability is similar to the Curve donation attack but exploits the yield distribution mechanism rather than share accounting. The key insight is that RewardRedistributor trusts the sUSDSC vault's spot totalAssets() without considering that TVL can be manipulated within the same transaction via flashloans or multi-step leveraging. The fix requires understanding both ERC4626 mechanics and MEV attack vectors."
-}
+},
 
 {
   "id": "gs_quantstamp_startale_sta002",
@@ -72,7 +72,7 @@
   "context_hint": "Index-based reward accounting requires settlement at all state-change points. The EarnVault correctly settles USDSC rewards but misses boost settlement. The withdraw() function shows the correct pattern - it calls both _settleRewards() and _settleBoost() before modifying principal. This is likely a refactoring oversight where boost reward support was added to an existing pattern without updating all deposit paths.",
   "is_vulnerable": true,
   "expert_notes": "Index-based reward systems (similar to Aave's index updates) must be settled before any operation that changes a user's balance. This is a subtle but critical invariant. The fact that withdraw() correctly calls _settleBoost() while deposit() doesn't suggests this was introduced during a code merge or refactoring. Good security practice would be to enforce this invariant with comments or asserts in critical functions."
-}
+},
 
 {
   "id": "gs_quantstamp_startale_sta003",
@@ -105,3 +105,4 @@
   "is_vulnerable": true,
   "expert_notes": "While donations are rare, this is a real risk in protocols that interface with multiple entities. The impact scales linearly with donation size and is avoidable with proper accounting separation. Similar issues have appeared in Curve gauges and Compound treasury management where accidental transfers disrupted expected mathematics."
 }
+]

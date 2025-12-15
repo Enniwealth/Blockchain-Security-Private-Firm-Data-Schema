@@ -1,4 +1,4 @@
-{
+[{
   "id": "gs_quantstamp_camp_camp001",
   "subset": "gold_standard",
   "language": "solidity",
@@ -34,7 +34,7 @@
   "context_hint": "The vulnerability stems from separating the user input (_originalAmount) from the actual token transfer (msg.value). In a properly designed bridge, these must be validated together. The contract assumes the user will honestly provide matching values, but provides no enforcement mechanism. Whitelisted users can exploit this immediately; non-whitelisted users can create debt that permanently blocks the queue.",
   "is_vulnerable": true,
   "expert_notes": "This is a critical authorization and accounting vulnerability. The root cause is an implicit trust in user input without enforcement. The fix requires tight coupling between deposit recording and actual token receipt. Combined with CAMP-2 (fee handling) and CAMP-4 (queue blocking), this creates a multi-layered attack surface where a single malicious deposit can drain honest depositors' funds or permanently break the bridge."
-}
+},
 
 {
   "id": "gs_quantstamp_camp_camp002",
@@ -72,7 +72,7 @@
   "context_hint": "This vulnerability combines accounting separation with dynamic pricing. The bridge correctly calculates fees dynamically (proper design), but the escrow mechanism doesn't reserve space for these fees at deposit time. The fix requires either: (1) collect fees upfront by querying LayerZero during deposit, or (2) implement a fee buffer mechanism that holds back a percentage of each deposit, or (3) implement error recovery in batchRelease() with try/catch to skip failed deposits.",
   "is_vulnerable": true,
   "expert_notes": "This is a rare but critical bug in bridge design. Many bridges calculate fees dynamically (correct) but forget to enforce fee payment at deposit collection time (incorrect). The issue becomes worse with volatile gas prices: if fees increase between deposit and withdrawal, the mechanism breaks. The fix is to query fees during bridgeOut() and include them in the msg.value requirement, making the contract's accounting model tight and failure-proof."
-}
+},
 
 {
   "id": "gs_quantstamp_camp_camp003",
@@ -110,7 +110,7 @@
   "context_hint": "The vulnerability stems from a design where a single timestamp controls access to all principal, combined with a delegated stake function that has no minimum amount. The attacker's economic cost is minimal (1 wei) while the victim's cost is time-based grief. This is a classic griefing vector in governance/staking systems. The fix requires separating concerns: each stake operation should have its own independent unlock time.",
   "is_vulnerable": true,
   "expert_notes": "This is a subtle but critical vulnerability in time-locked staking systems. The root cause is the confusion between two concepts: (1) when did a user start staking (for calculating rewards), and (2) when can a user withdraw specific deposits (for enforcing lock-up periods). The contract conflated these into a single lastStakeTime, which created the griefing vector. Per-deposit tracking properly separates these concerns and eliminates the attack surface."
-}
+},
 
 {
   "id": "gs_quantstamp_camp_camp004",
@@ -148,7 +148,7 @@
   "context_hint": "This is a sophisticated attack on batch processing systems combined with cross-chain bridges. The attacker exploits the interaction between three mechanisms: (1) sequential queue processing, (2) dust removal rounding, and (3) slippage validation. The poison pill works because the queue cursor doesn't advance on revert. The attack surface exists because deposit validation doesn't simulate the future bridging process.",
   "is_vulnerable": true,
   "expert_notes": "This vulnerability demonstrates why bridge systems need tight integration between deposit validation and execution logic. The dust removal mechanism is necessary for cross-chain compatibility (different chains have different decimal precisions), but the escrow mechanism must validate deposits against post-dust amounts. This is a lesson in defense-in-depth: validation at deposit time (primary fix) combined with error recovery at execution time (secondary fix) creates a robust system."
-}
+},
 
 {
   "id": "gs_quantstamp_camp_camp005",
@@ -186,4 +186,4 @@
   "context_hint": "This is a classic griefing attack on batch processing systems. The core issue is that bridgeOut() cost (cheap: no external calls) is decoupled from batchRelease() cost (expensive: LayerZero calls). An attacker can create unlimited entries in the queue at minimal cost, forcing the honest keeper to pay for processing them. The fix requires either: (1) raising the cost of creating queue entries (minimum deposit), or (2) allowing selective processing (indexed batch release).",
   "is_vulnerable": true,
   "expert_notes": "This vulnerability represents a classic economic attack on permissionless queuing systems. The root cause is the linear relationship between queue size and batching cost, combined with no barrier to entry for creating queue entries. The minimum deposit approach (recommended) is simpler and more gas-efficient. The indexed approach is more powerful but introduces keeper infrastructure overhead. For this specific system, MIN_DEPOSIT = 0.1 ETH would make the 1000-deposit attack cost 100 ETH, making it economically rational to just use the bridge legitimately."
-}
+}]
