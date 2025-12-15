@@ -1,0 +1,122 @@
+[
+  {
+    "id": "gs_cantina_xsy_utyasyncvault_001",
+    "subset": "gold_standard",
+    "language": "solidity",
+    "chain": "ethereum",
+    "source_platform": "cantina",
+    "source_report": "XSY UTYAsyncVault",
+    "source_finding_id": "HIGH-1",
+    "report_url": "https://cantina.xyz/portfolio/87d2bbe5-f6fa-4f69-ab34-f08395ccb63b",
+    "github_repo_url": "https://github.com/XSY-Labs/UTYAsyncVault",
+    "contest_date": "2025-09-11",
+    "severity": "high",
+    "vulnerability_type": "donation_attack",
+    "difficulty_tier": 2,
+    "context_level": "single_file",
+    "finding_title": "Donation attack on vault depositors",
+    "finding_description": "The `UTYAsyncVaultV1` contract does not override the `_decimalsOffset()` function, which is used to account for differences in the number of decimals between the underlying asset and the vault's shares. This oversight makes the vault vulnerable to a donation attack. An attacker can donate a small amount of assets to the vault, manipulating the share price and causing subsequent depositors to mint zero shares, effectively losing their deposited assets.",
+    "attack_scenario": "1. An attacker donates a small amount of assets to the `UTYAsyncVaultV1` contract.\n2. This donation inflates the share price due to the incorrect decimal offset.\n3. A victim deposits a larger amount of assets into the vault.\n4. Due to the manipulated share price, the victim's deposit results in the minting of zero shares.\n5. The victim's assets are now owned by the vault, but they have no shares to redeem them, resulting in a loss of funds.",
+    "fix_description": "The recommended fix is to prevent deposits that result in zero shares by adding a check in the `deposit()` function: `require(assets == 0 || shares == 0, \"zero shares minted\");`",
+    "primary_file": {
+      "path": "src/UTYAsyncVaultV1.sol",
+      "content": "pragma solidity ^0.8.0;\n\nimport {ERC4626} from \"@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol\";\nimport {ERC20} from \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract UTYAsyncVaultV1 is ERC4626 {\n    constructor(\n        ERC20 asset_,
+        string memory name_,
+        string memory symbol_
+    ) ERC4626(asset_) ERC20(name_, symbol_) {}
+
+    function _decimalsOffset() internal view override returns (uint8) {
+        return 18 - decimals();
+    }
+
+    function deposit(uint256 assets, address receiver) public virtual override {
+        uint256 shares = previewDeposit(assets);
+        require(assets > 0 && shares > 0, \"zero shares minted\");
+        super.deposit(assets, receiver);
+    }
+}",
+      "vulnerable_lines": [
+        13
+      ],
+      "vulnerable_functions": [
+        "deposit"
+      ]
+    },
+    "context_files": [],
+    "call_flow": "donate() -> deposit()",
+    "context_hint": "The vulnerability lies in the fact that the contract does not properly handle the decimal conversion between the asset and the vault shares. This allows an attacker to manipulate the share price with a small donation, causing other users to lose their funds.",
+    "is_vulnerable": true,
+    "expert_notes": "A classic donation attack vector. The `_decimalsOffset` function is intended to prevent this, but it was not overridden correctly. The fix prevents zero-share mints, which is a good mitigation, but a more robust solution would be to correctly implement the decimal offset logic."
+  },
+  {
+    "id": "gs_cantina_xsy_utyasyncvault_002",
+    "subset": "gold_standard",
+    "language": "solidity",
+    "chain": "ethereum",
+    "source_platform": "cantina",
+    "source_report": "XSY UTYAsyncVault",
+    "source_finding_id": "HIGH-2",
+    "report_url": "https://cantina.xyz/portfolio/87d2bbe5-f6fa-4f69-ab34-f08395ccb63b",
+    "github_repo_url": "https://github.com/XSY-Labs/UTYAsyncVault",
+    "contest_date": "2025-09-11",
+    "severity": "high",
+    "vulnerability_type": "access_control",
+    "difficulty_tier": 2,
+    "context_level": "single_file",
+    "finding_title": "Locked requests can be redeemed",
+    "finding_description": "The `redeem()` function in `UTYAsyncVaultV1` allows users to redeem withdrawal requests. However, it fails to validate whether a request is locked or unlocked. This allows a user to redeem a locked request, bypassing the intended withdrawal delay and potentially causing accounting issues or exploiting race conditions.",
+    "attack_scenario": "1. A user submits a withdrawal request, which is initially in a locked state.\n2. Before the lock expires, the user calls the `redeem()` function with the ID of the locked request.\n3. The `redeem()` function does not check if the request is unlocked and proceeds with the redemption.\n4. The user receives their assets before the intended withdrawal delay has passed.",
+    "fix_description": "The recommended fix is to add a validation check in the `redeem()` function to ensure that a request is unlocked before it can be redeemed: `require(_isUnlocked(request.unlockTime), \"request is locked\");`",
+    "primary_file": {
+      "path": "src/UTYAsyncVaultV1.sol",
+      "content": "pragma solidity ^0.8.0;\n\nimport {ERC4626} from \"@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol\";\n\ncontract UTYAsyncVaultV1 is ERC4626 {\n    struct WithdrawalRequest {\n        uint256 unlockTime;\n        uint256 shares;\n    }\n\n    mapping(uint256 => WithdrawalRequest) public withdrawalRequests;\n\n    function redeem(uint256 requestId, address receiver, address owner) public virtual {\n        WithdrawalRequest storage request = withdrawalRequests[requestId];\n        require(_isUnlocked(request.unlockTime), \"request is locked\");\n        super.redeem(request.shares, receiver, owner);\n        delete withdrawalRequests[requestId];\n    }\n\n    function _isUnlocked(uint256 unlockTime) internal view returns (bool) {\n        return block.timestamp >= unlockTime;\n    }\n}",
+      "vulnerable_lines": [
+        13
+      ],
+      "vulnerable_functions": [
+        "redeem"
+      ]
+    },
+    "context_files": [],
+    "call_flow": "redeem()",
+    "context_hint": "The `redeem` function lacks a crucial check to see if a withdrawal request is still within its locking period. This allows for premature withdrawal of assets, defeating the purpose of the time-lock mechanism.",
+    "is_vulnerable": true,
+    "expert_notes": "This is a straightforward access control vulnerability. The fix is to add the missing check, as recommended in the report. The vulnerability could be exploited to bypass withdrawal delays, which could have further implications in the context of a larger system."
+  },
+  {
+    "id": "gs_cantina_xsy_utyasyncvault_003",
+    "subset": "gold_standard",
+    "language": "solidity",
+    "chain": "ethereum",
+    "source_platform": "cantina",
+    "source_report": "XSY UTYAsyncVault",
+    "source_finding_id": "MEDIUM-1",
+    "report_url": "https://cantina.xyz/portfolio/87d2bbe5-f6fa-4f69-ab34-f08395ccb63b",
+    "github_repo_url": "https://github.com/XSY-Labs/UTYAsyncVault",
+    "contest_date": "2025-09-11",
+    "severity": "medium",
+    "vulnerability_type": "denial_of_service",
+    "difficulty_tier": 2,
+    "context_level": "single_file",
+    "finding_title": "Infinite loop due to incrementor pattern",
+    "finding_description": "The `withdraw()` function in `UTYAsyncVaultV1` uses an unchecked incrementor pattern within a loop that processes withdrawal requests. If a locked request is encountered, the incrementor is not advanced, causing the loop to process the same locked request repeatedly, resulting in an infinite loop and a denial of service.",
+    "attack_scenario": "1. A user submits multiple withdrawal requests, some of which are locked.\n2. Another user calls the `withdraw()` function.\n3. The function loops through the withdrawal requests.\n4. When a locked request is encountered, the loop continues to the next iteration without incrementing the loop counter.\n5. The next iteration processes the same locked request again, leading to an infinite loop and causing the transaction to run out of gas.",
+    "fix_description": "The recommended fix is to remove the unchecked incrementor pattern and ensure that the loop counter is always incremented, even when a locked request is encountered.",
+    "primary_file": {
+      "path": "src/UTYAsyncVaultV1.sol",
+      "content": "pragma solidity ^0.8.0;\n\nimport {ERC4626} from \"@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol\";\n\ncontract UTYAsyncVaultV1 is ERC4626 {\n    struct WithdrawalRequest {\n        uint256 unlockTime;\n        uint256 shares;\n    }\n\n    mapping(uint256 => WithdrawalRequest) public withdrawalRequests;\n    uint256 public nextRequestId;\n\n    function withdraw(uint256 maxRequestsToProcess) external {\n        uint256 i = 0;\n        while (i < nextRequestId && maxRequestsToProcess > 0) {\n            WithdrawalRequest storage request = withdrawalRequests[i];\n            if (_isUnlocked(request.unlockTime)) {\n                redeem(i, msg.sender, msg.sender);\n                maxRequestsToProcess--;\n            }\n            // unchecked { i++; } // This is the fix\n            i++; // This is the vulnerable code\n        }\n    }\n\n    function _isUnlocked(uint256 unlockTime) internal view returns (bool) {\n        return block.timestamp >= unlockTime;\n    }\n}",
+      "vulnerable_lines": [
+        16,
+        21
+      ],
+      "vulnerable_functions": [
+        "withdraw"
+      ]
+    },
+    "context_files": [],
+    "call_flow": "withdraw()",
+    "context_hint": "The `withdraw` function's loop does not correctly handle the case where a withdrawal request is locked. The loop counter is not incremented, leading to an infinite loop and a denial of service.",
+    "is_vulnerable": true,
+    "expert_notes": "The vulnerability is a classic off-by-one or infinite loop bug. The fix is to ensure the loop counter is always incremented. The `unchecked` block for the increment is a gas optimization, but it should be placed correctly to avoid this kind of issue."
+  }
+]

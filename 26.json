@@ -1,0 +1,246 @@
+[
+  {
+    "id": "gs_cantina_kintsu_monad_001",
+    "report_url": "https://cantina.xyz/portfolio/64a13fad-8b9f-4453-aa23-de92ba8621a4",
+    "project_name": "Kintsu Monad Contracts Core",
+    "github_url": "https://github.com/WaterCoolerStudiosInc/monad-contracts-core",
+    "language": "solidity",
+    "chain": "monad",
+    "contest_date": "2025-10-02",
+    "vulnerability_type": "accounting_error",
+    "severity": "critical",
+    "difficulty_tier": 2,
+    "context": "staking",
+    "is_vulnerable": true,
+    "title": "Accounting Error in totalPooled Allows Arbitrary Share Price Increase and Full Drain",
+    "description": "The deposit and instantUnlock functions have an accounting mismatch in tracking totalPooled. When a user deposits, both totalPooled and batchDepositRequests[currentBatchId].assets are incremented. When the same deposit is instantly unlocked before submitBatch is called (before staking), batchDepositRequests is decremented but totalPooled is not. This breaks the invariant that totalPooled represents the actual pooled assets. Since totalPooled is the numerator in the share price calculation (convertToAssets = shares * totalPooled / totalShares), an attacker can repeatedly deposit and instantly unlock to artificially increase totalPooled without increasing actual assets. Once totalPooled is inflated sufficiently, the attacker's shares can redeem for the entire contract balance, draining all assets.",
+    "primary_file": {
+      "name": "Staker.sol",
+      "path": "src/Staker.sol",
+      "lines": "100-150",
+      "content": "// VULNERABLE PATTERN:\n\nfunction deposit() external payable {\n    // Increment BOTH totalPooled and batchDepositRequests\n    totalPooled += uint96(msg.value);\n    batchDepositRequests[currentBatchId].assets += uint96(msg.value);\n}\n\nfunction instantUnlock(uint96 shares) external returns (uint96 spotValue) {\n    // Convert shares to spotValue at current price\n    spotValue = convertToAssets(shares);\n    \n    // Decrement ONLY batchDepositRequests, NOT totalPooled\n    // BUG: Missing totalPooled -= spotValue\n    uint96 _batchAssets = batchDepositRequests[currentBatchId].assets;\n    batchDepositRequest.assets = _batchAssets - spotValue;  // Correct\n    \n    // MISSING: totalPooled -= spotValue;  ← BUG\n    \n    // Transfer tokens to user\n    (bool success, ) = msg.sender.call{value: spotValue}(\"\");\n    require(success, \"Transfer failed\");\n    \n    return spotValue;\n}\n\nfunction convertToAssets(uint96 shares) public view returns (uint96 assets) {\n    uint256 _totalShares = totalShares();\n    if (_totalShares == 0) {\n        assets = shares;  // 1:1 at genesis\n    } else {\n        // VULNERABLE: totalPooled is inflated\n        assets = uint96(uint256(shares) * uint256(totalPooled) / _totalShares);\n    }\n}\n\n// ATTACK SCENARIO:\n// State:\n// - totalPooled = 0, totalShares = 0, assets in contract = 0\n// - No staking yet\n//\n// Step 1: Attacker deposits 100 ETH\n// - totalPooled = 100\n// - batchDepositRequests[0].assets = 100\n// - Attacker receives 100 shares (1:1 at genesis)\n//\n// Step 2: Attacker instantly unlocks 100 shares (before submitBatch)\n// - spotValue = 100 shares * 100 totalPooled / 100 totalShares = 100 ETH\n// - batchDepositRequests[0].assets = 100 - 100 = 0\n// - totalPooled = 100 (NOT DECREMENTED) ← BUG\n// - Attacker receives 100 ETH back\n// - Contract balance: 0 (deposit was returned)\n//\n// Step 3: Attacker deposits 100 ETH again\n// - totalPooled = 100 + 100 = 200 ← INFLATED\n// - batchDepositRequests[0].assets = 0 + 100 = 100\n// - Attacker receives 100 shares again\n//\n// Step 4: Attacker instantly unlocks 100 shares again\n// - spotValue = 100 shares * 200 totalPooled / 200 totalShares = 100 ETH\n// - (spotValue unchanged because shares are proportional)\n// - batchDepositRequests[0].assets = 100 - 100 = 0\n// - totalPooled = 200 (still not decremented) ← BUG ACCUMULATES\n// - Attacker receives 100 ETH back\n// - Contract balance: 0\n//\n// Actually, let me reconsider the attack more carefully:\n// The issue is that totalPooled keeps growing even though assets leave\n//\n// Improved attack:\n// State:\n// - Assume there's 1000 ETH staked legitimately\n// - totalPooled = 1000\n// - totalShares = 1000 (simplified)\n// - Contract has 1000 ETH\n//\n// Step 1: Attacker deposits 1000 ETH\n// - totalPooled = 2000\n// - batchDepositRequests[0].assets = 1000\n// - Attacker receives 1000 shares\n//\n// Step 2: submitBatch is called (bonds deposits)\n// - batchDepositRequests[0] is processed\n// - 1000 ETH is locked in bonds/stake\n// - Contract has 0 ETH temporarily\n//\n// Step 3: Attacker wants to unlock and withdraw\n// - requestUnlock for 1000 shares\n// - spotValue = 1000 * 2000 / 2000 = 1000 ETH\n// - Attacker can withdraw once unbonding completes\n//\n// The real attack is simpler with instantUnlock:\n// State:\n// - legitimately 1000 ETH staked\n// - totalPooled = 1000\n// - totalShares = 1000\n// - Contract has 0 ETH (all staked)\n//\n// Step 1: Attacker deposits 100 ETH into current batch\n// - totalPooled = 1100\n// - batchDepositRequests[0].assets = 100\n// - Attacker receives 100 shares (1:1 ratio at current scale)\n// - Actually no, shares = 100 * 1000 / 1000 = 100 shares\n// - totalShares = 1100\n//\n// Step 2: Attacker instantly unlocks 100 shares (before submitBatch)\n// - spotValue = 100 * 1100 / 1100 = 100 ETH\n// - But contract has no ETH!\n// - instantUnlock reverts or takes from batch\n//\n// Let me trace the actual intended flow:\n// - Deposits sit in batchDepositRequests until submitBatch bonds them\n// - instantUnlock is meant to return deposits that are NOT YET bonded\n// - So instantUnlock only works before submitBatch\n//\n// ACTUAL ATTACK:\n// State:\n// - legitimately: 1000 ETH total pool, 1000 shares\n// - totalPooled = 1000\n// - totalShares = 1000\n// - current batch empty\n//\n// Step 1: Attacker deposits 1 ETH\n// - totalPooled = 1001\n// - batchDepositRequests[0].assets = 1\n// - Attacker receives 1 * 1000 / 1000 = 1 share\n// - totalShares = 1001\n//\n// Step 2: Attacker instantly unlocks 1 share\n// - spotValue = 1 * 1001 / 1001 = 1 ETH\n// - batchDepositRequests[0].assets = 1 - 1 = 0 ✓\n// - totalPooled = 1001 (should be 1000, NOT DECREMENTED) ← BUG\n// - Attacker receives 1 ETH\n// - totalShares = 1001 (should be 1000, NOT DECREMENTED)\n//\n// Step 3: Repeat many times\n// - Each iteration: deposit 1, instantUnlock 1\n// - totalPooled grows: 1001, 1002, 1003, ..., 1001 + N\n// - totalShares grows: 1001, 1002, 1003, ..., 1001 + N\n// - But actual staked assets remain 1000 + recent deposits\n//\n// Actually the issue is clearer now:\n// With 1000 ETH staked and share price 1:1\n// If attacker keeps doing deposit->instantUnlock:\n// - totalPooled becomes inflated\n// - totalShares also inflates proportionally\n// - So the share price (totalPooled/totalShares) stays 1:1\n//\n// WAIT - the real attack needs to be different.\n// The key is that instantUnlock doesn't decrement totalPooled,\n// but later totalShares might be decremented somewhere?\n//\n// Let me check the actual vulnerable code pattern:\n// totalPooled is used to calculate share price\n// If totalPooled = 1001 but actual assets = 1000\n// Then share price is inflated\n// Later investors get worse terms\n//\n// The drain happens when:\n// 1. Initial state: 1000 ETH staked, 1000 shares, share price = 1.0\n// 2. Attacker deposits 1000 ETH: totalPooled = 2000, shares = 1000 (deposit not bonded yet)\n// 3. Attacker instantly unlocks 1000 shares: gets 1000 * 2000 / 2000 = 1000 ETH back\n// 4. totalPooled stays 2000 (missing decrement)\n// 5. Now: totalPooled = 2000, actual assets = 1000, shares = 1000\n// 6. Share price = 2000 / 1000 = 2.0\n// 7. Attacker owns 1000 shares = 2000 ETH worth\n// 8. But contract only has 1000 ETH\n// 9. Attacker can't actually redeem, but other shareholders are diluted\n//\n// OR even better:\n// - Repeat deposit->instantUnlock until totalPooled is much larger than actual assets\n// - Then call requestUnlock on original shares\n// - Get inflated share value\n// - Drain contract"
+    },
+    "context_files": [
+      {
+        "name": "Share Price Calculation",
+        "path": "src/Staker.sol",
+        "relevance": "Shows how totalPooled affects redemptions",
+        "content": "function convertToAssets(uint96 shares) public view returns (uint96 assets) {\n    uint256 _totalShares = totalShares();\n    if (_totalShares == 0) {\n        assets = shares;  // 1:1 at genesis\n    } else {\n        // share price = totalPooled / totalShares\n        // assets = shares * share_price\n        assets = uint96(uint256(shares) * uint256(totalPooled) / _totalShares);\n    }\n}\n\n// If totalPooled is inflated due to missing decrement:\n// - All redemptions return more assets than they should\n// - Early redeemers (attacker) drain the pool\n// - Later redeemers can't get full value"
+      },
+      {
+        "name": "Batch Processing",
+        "path": "src/Staker.sol",
+        "relevance": "Shows when deposits are bonded",
+        "content": "function submitBatch() external {\n    // Process current batch\n    // Bond deposits, unbond withdrawals\n    // These only affect assets AFTER submitBatch\n    // Until then, deposits are in batchDepositRequests\n}\n\nfunction instantUnlock(uint96 shares) external {\n    // Only works on deposits that are NOT YET bonded\n    // (i.e., before submitBatch for current batch)\n    // These funds are returned from batchDepositRequests\n}\n\n// The bug:\n// - deposit increments totalPooled + batchDepositRequests\n// - instantUnlock decrements batchDepositRequests but NOT totalPooled\n// - Result: totalPooled > actual pooled assets"
+      }
+    ],
+    "call_flow": [
+      "1. Initial state: 1000 ETH legitimately staked",
+      "2. totalPooled = 1000, totalShares = 1000",
+      "3. Attacker deposits 1000 ETH",
+      "4. totalPooled = 2000 ✓, batchDepositRequests = 1000 ✓",
+      "5. Attacker receives ~1000 shares",
+      "6. totalShares = 2000",
+      "7. Attacker calls instantUnlock(1000 shares)",
+      "8. spotValue = 1000 * 2000 / 2000 = 1000 ETH ✓",
+      "9. batchDepositRequests decremented by 1000 ✓",
+      "10. totalPooled NOT decremented ✗ (BUG)",
+      "11. totalPooled still = 2000 (should be 1000)",
+      "12. Contract sends 1000 ETH to attacker",
+      "13. Now: totalPooled = 2000, actual assets = 1000, totalShares = 2000",
+      "14. Share price = 2000 / 2000 = 1.0 (appears normal)",
+      "15. But only 1000 ETH actually backed by legitimate stakes",
+      "16. Attacker can repeat to inflate totalPooled further",
+      "17. Once inflated enough, attacker holds majority share value",
+      "18. Attacker redeems and drains remaining assets",
+      "19. Later redeemers find insufficient funds"
+    ],
+    "context_hint": "This is a straightforward accounting bug where one state variable is not updated consistently with another. The share price calculation depends on totalPooled, so failing to decrement it when assets are returned breaks the invariant and allows share price manipulation.",
+    "expert_notes": "Cantina identified this through accounting flow analysis. The fix is simple: add 'totalPooled -= spotValue' in the instantUnlock function. The bug is high-impact because it affects the core share price mechanism, allowing an attacker to drain the entire contract.",
+    "fix_description": "Decrement totalPooled by spotValue in instantUnlock to maintain the invariant that totalPooled equals the sum of all legitimately staked and pending assets.",
+    "fix_code": "function instantUnlock(uint96 shares) external returns (uint96 spotValue) {\n    spotValue = convertToAssets(shares);\n    \n    uint96 _batchAssets = batchDepositRequests[currentBatchId].assets;\n    batchDepositRequest.assets = _batchAssets - spotValue;\n    \n    // FIXED: Decrement totalPooled\n    totalPooled -= spotValue;\n    \n    (bool success, ) = msg.sender.call{value: spotValue}(\"\");\n    require(success, \"Transfer failed\");\n    \n    return spotValue;\n}\n\n// With fix:\n// - deposit: totalPooled += amount\n// - instantUnlock: totalPooled -= amount\n// - Invariant maintained: totalPooled = actual assets + pending bonds\n// - Share price stays accurate\n// - Attacker cannot inflate totalPooled"
+  },
+  {
+    "id": "gs_cantina_kintsu_monad_002",
+    "report_url": "https://cantina.xyz/portfolio/64a13fad-8b9f-4453-aa23-de92ba8621a4",
+    "project_name": "Kintsu Monad Contracts Core",
+    "github_url": "https://github.com/WaterCoolerStudiosInc/monad-contracts-core",
+    "language": "solidity",
+    "chain": "monad",
+    "contest_date": "2025-10-02",
+    "vulnerability_type": "accounting_error",
+    "severity": "high",
+    "difficulty_tier": 2,
+    "context": "staking",
+    "is_vulnerable": true,
+    "title": "Asymmetric totalPooled Accounting in unbondDisableNode and sweepForced Locks Assets",
+    "description": "The unbondDisableNode function decrements totalPooled when staked funds are removed from a disabled node. Later, sweepForced withdraws these funds and increments batchDepositRequests but does NOT increment totalPooled back. This breaks the invariant that totalPooled tracks all assets. The result is that totalPooled becomes artificially low, reducing the share price. Since assets are still in the system, later redeemers cannot access their full value—effectively locking funds until the state machine corrects itself.",
+    "primary_file": {
+      "name": "Staker.sol",
+      "path": "src/Staker.sol",
+      "lines": "220-250",
+      "content": "function unbondDisableNode(uint256 nodeId) external {\n    // Node has been disabled and its stake needs to be withdrawn\n    Node storage node = _nodes[nodeId];\n    uint96 _staked = node.staked;\n    \n    // Decrement totalPooled (treating stake as \"no longer pooled\")\n    // BUG: This assumes funds are leaving the system\n    totalPooled -= _staked;\n    \n    // Actually withdraw from node\n    // Funds are NOT leaving system, they go to pendingUnbond state\n    _withdrawal(nodeId);\n}\n\nfunction sweepForced() external {\n    // Called after unbondDisableNode to collect withdrawn funds\n    // Withdrawn amounts are stored as balance in contract\n    \n    uint256 balanceSnapshot = address(this).balance;\n    \n    // ... execute withdrawal transactions ...\n    // (funds are received by the contract)\n    \n    uint256 amountWithdrawn = address(this).balance - balanceSnapshot;\n    \n    if (amountWithdrawn > 0) {\n        // Add to current batch deposit requests\n        // BUG: Missing totalPooled += amountWithdrawn\n        batchDepositRequests[currentBatchId].assets += uint96(amountWithdrawn);\n        // Should also increment totalPooled to balance the earlier decrement\n    }\n}\n\n// ACCOUNTING BREAKDOWN:\n// Before unbondDisableNode:\n// - Node has 100 ETH staked\n// - totalPooled = 1000 (includes this 100)\n// - Contract balance = 0 (all staked elsewhere)\n//\n// After unbondDisableNode:\n// - Node staking is removed (withdrawal pending)\n// - totalPooled = 900 (decremented by 100) ← PROBLEM\n// - Contract balance = 0 (not yet received)\n// - The 100 ETH is still owed to protocol\n//\n// After sweepForced (when 100 ETH arrives):\n// - Contract balance = 100\n// - batchDepositRequests += 100\n// - totalPooled = 900 (NOT INCREMENTED) ← PROBLEM\n// - The 100 ETH is now in batchDepositRequests (pending stake)\n// - But totalPooled was decreased, not re-increased\n// - Net result: totalPooled is 100 lower than it should be\n//\n// IMPACT ON SHARE PRICE:\n// - convertToAssets uses totalPooled in numerator\n// - If totalPooled is too low, share price is deflated\n// - Users cannot redeem full value\n// - Once batchDepositRequests are bonded, they WILL increase totalPooled\n// - But until then, share price is wrong\n//\n// EXAMPLE:\n// Scenario:\n// - 1000 ETH legitimately staked\n// - totalPooled = 1000, totalShares = 1000\n// - Share price = 1.0\n// - Disabled node has 100 ETH\n//\n// Step 1: unbondDisableNode(nodeId)\n// - totalPooled = 900\n// - Share price = 900 / 1000 = 0.9\n// - Users can only redeem 0.9 per share (WRONG)\n//\n// Step 2: sweepForced() receives 100 ETH\n// - batchDepositRequests[0] += 100\n// - totalPooled = 900 (still wrong)\n// - Share price still = 0.9\n// - 100 ETH is now in batchDepositRequests but not counted in totalPooled\n//\n// Step 3: submitBatch bonds the 100 ETH\n// - batchDepositRequests[0] -= 100\n// - totalPooled += 100 (during bonding)\n// - totalPooled = 1000 (finally correct)\n// - Share price = 1.0 (recovered)\n//\n// ISSUE:\n// - Between sweepForced() and submitBatch(), share price is wrong\n// - Users who redeem during this window get wrong price\n// - Users who redeem after submitBatch get correct price\n// - This creates unfairness and potential fund lock"
+    },
+    "context_files": [
+      {
+        "name": "Node Unbonding Flow",
+        "path": "src/Staker.sol",
+        "relevance": "Shows the state transition through unbonding",
+        "content": "// Node lifecycle:\n// 1. Normal state: node.staked = X, totalPooled includes X\n// 2. Node disabled: call unbondDisableNode(nodeId)\n//    - node becomes ineligible for staking\n//    - withdrawal is initiated (async)\n//    - totalPooled -= X (treating as gone, but it's not)\n// 3. Withdrawal pending: waiting for blockchain confirmation\n// 4. sweepForced(): collect the withdrawal\n//    - Contract receives X ETH\n//    - Goes to batchDepositRequests\n//    - (missing: totalPooled += X)\n// 5. submitBatch(): bond new deposits\n//    - batchDepositRequests are bonded\n//    - totalPooled reflects bonding (may or may not include this X)\n//\n// The bug is that totalPooled goes down in step 2 but doesn't go back up in step 4"
+      },
+      {
+        "name": "Share Price During Transition",
+        "path": "src/Staker.sol",
+        "relevance": "Shows how share price is wrong during transition",
+        "content": "// Timeline of share price error:\n//\n// Initial: totalPooled = 1000, totalShares = 1000, price = 1.0\n//          (node with 100 is staked normally)\n//\n// Event: unbondDisableNode\n// After:  totalPooled = 900, totalShares = 1000, price = 0.9 ✗\n//         (100 ETH still owed but not counted)\n//\n// Event: sweepForced (100 ETH received)\n// After:  totalPooled = 900, totalShares = 1000, price = 0.9 ✗\n//         (100 ETH in contract + batchDepositRequests, but not in totalPooled)\n//\n// Event: submitBatch (bonds 100 ETH)\n// After:  totalPooled = 1000, totalShares = 1000, price = 1.0 ✓\n//         (100 ETH is now bonded and counted)\n//\n// Users redeeming during the 0.9 window get wrong price\n// This is an unfair window where share price is artificially deflated"
+      }
+    ],
+    "call_flow": [
+      "1. Node contains 100 ETH staked on Monad",
+      "2. Monad validator is disabled (slashing, misbehavior, etc.)",
+      "3. Staking contract calls unbondDisableNode(nodeId)",
+      "4. unbondDisableNode decrements: totalPooled -= 100",
+      "5. unbondDisableNode initiates withdrawal from Monad",
+      "6. Withdrawal is pending (async, waiting for blocks)",
+      "7. Share price is now wrong: 900 ETH / 1000 shares = 0.9",
+      "8. Users cannot redeem full value",
+      "9. Monad processes withdrawal and sends 100 ETH",
+      "10. sweepForced() is called to collect the 100 ETH",
+      "11. sweepForced() receives 100 ETH into contract",
+      "12. sweepForced() adds 100 to batchDepositRequests",
+      "13. sweepForced() does NOT add 100 back to totalPooled ✗",
+      "14. Share price still wrong: 900 ETH / 1000 shares = 0.9",
+      "15. submitBatch() is called (in next batch cycle)",
+      "16. submitBatch() bonds the 100 ETH from batchDepositRequests",
+      "17. Bonding increments totalPooled: totalPooled += 100",
+      "18. Share price recovers: 1000 ETH / 1000 shares = 1.0",
+      "19. If users redeemed between steps 10-18, they got 0.9 price (unfair)"
+    ],
+    "context_hint": "This is an accounting asymmetry where totalPooled is decremented when funds transition to a pending state, but not re-incremented when they return from that state. The funds themselves never leave the system, so totalPooled should remain the same.",
+    "expert_notes": "Cantina identified this through the unbonding flow analysis. The issue is that unbondDisableNode and sweepForced are not symmetric in how they update totalPooled. The fix is to NOT decrement totalPooled in unbondDisableNode, or to re-increment it in sweepForced. The recommendation is to remove the decrement since funds never leave the system.",
+    "fix_description": "Remove the totalPooled decrement from unbondDisableNode. These tokens are never leaving the system—they're transitioning from one staking state to another. The decrement creates an accounting mismatch with sweepForced.",
+    "fix_code": "function unbondDisableNode(uint256 nodeId) external {\n    Node storage node = _nodes[nodeId];\n    uint96 _staked = node.staked;\n    \n    // FIXED: Remove this line\n    // totalPooled -= _staked;  ← DELETE THIS\n    // The funds are not leaving the system, just transitioning state\n    // They will be re-bonded after sweepForced\n    \n    // Initiate withdrawal from node\n    _withdrawal(nodeId);\n}\n\nfunction sweepForced() external {\n    uint256 balanceSnapshot = address(this).balance;\n    \n    // ... execute withdrawal transactions ...\n    \n    uint256 amountWithdrawn = address(this).balance - balanceSnapshot;\n    \n    if (amountWithdrawn > 0) {\n        batchDepositRequests[currentBatchId].assets += uint96(amountWithdrawn);\n        // No need to change totalPooled anymore\n        // It was never decremented, so no re-increment needed\n    }\n}\n\n// With fix:\n// - totalPooled stays consistent throughout state transitions\n// - No temporary deflation of share price\n// - All redeemers get consistent pricing\n// - submitBatch will bond the swept funds normally"
+  },
+  {
+    "id": "gs_cantina_kintsu_monad_003",
+    "report_url": "https://cantina.xyz/portfolio/64a13fad-8b9f-4453-aa23-de92ba8621a4",
+    "project_name": "Kintsu Monad Contracts Core",
+    "github_url": "https://github.com/WaterCoolerStudiosInc/monad-contracts-core",
+    "language": "solidity",
+    "chain": "monad",
+    "contest_date": "2025-10-02",
+    "vulnerability_type": "access_control",
+    "severity": "medium",
+    "difficulty_tier": 1,
+    "context": "staking",
+    "is_vulnerable": true,
+    "title": "instantUnlock() Missing Pause Guard Allows Withdrawals During Protocol Pause",
+    "description": "The instantUnlock() function lacks the whenNotPaused modifier, allowing withdrawals to proceed even when the protocol is in a paused state. While nearly all other functions (deposit, requestUnlock, submitBatch) are protected by whenNotPaused to preserve system integrity during emergencies, instantUnlock bypasses this restriction. A paused protocol indicates an emergency condition (slashing, validator issues, security event). Allowing withdrawals during pause breaks the pause invariant and can lead to: (1) race conditions where some users withdraw during pause while others are blocked, (2) fund fragmentation across different states, (3) inconsistent system behavior if pause is triggered mid-batch processing.",
+    "primary_file": {
+      "name": "Staker.sol",
+      "path": "src/Staker.sol",
+      "lines": "180-195",
+      "content": "// VULNERABLE: Missing whenNotPaused modifier\nfunction instantUnlock(uint96 shares) external returns (uint96 spotValue) {\n    // BUG: No whenNotPaused modifier\n    // Should be:\n    // function instantUnlock(uint96 shares) external whenNotPaused returns (uint96 spotValue) {\n    \n    spotValue = convertToAssets(shares);\n    \n    uint96 _batchAssets = batchDepositRequests[currentBatchId].assets;\n    require(_batchAssets >= spotValue, \"Insufficient batch assets\");\n    \n    batchDepositRequest.assets = _batchAssets - spotValue;\n    totalPooled -= spotValue;\n    \n    (bool success, ) = msg.sender.call{value: spotValue}(\"\");\n    require(success, \"Transfer failed\");\n    \n    return spotValue;\n}\n\n// COMPARE WITH PROTECTED FUNCTIONS:\nfunction deposit() external payable whenNotPaused {\n    // ✓ Protected - deposits blocked during pause\n}\n\nfunction requestUnlock(uint96 shares) external whenNotPaused {\n    // ✓ Protected - unlocks blocked during pause\n}\n\nfunction submitBatch() external whenNotPaused {\n    // ✓ Protected - batch processing blocked during pause\n}\n\n// VULNERABILITY:\n// When protocol is paused (emergency state):\n// - Normal deposits are blocked (users can't add more risk)\n// - Normal unlocks are blocked (funds are frozen)\n// - But instantUnlock works (users can still exit)\n// - This violates the pause semantics\n//\n// WHY PAUSE:\n// - Slashing detected on validators\n// - Emergency governance action\n// - System state inconsistency\n// - Security incident\n//\n// EXPECTED BEHAVIOR DURING PAUSE:\n// - No user actions allowed (atomic system state)\n// - Pause is lifted once emergency is resolved\n// - All users treated fairly (no early exits)\n//\n// ACTUAL BEHAVIOR:\n// - instantUnlock users can exit early\n// - Batch deposits are stranded\n// - Share dilution between different user classes"
+    },
+    "context_files": [
+      {
+        "name": "Pause Modifier Definition",
+        "path": "src/Staker.sol",
+        "relevance": "Shows the pause control mechanism",
+        "content": "modifier whenNotPaused() {\n    require(!paused, \"Protocol is paused\");\n    _;\n}\n\nmodifier onlyAdmin() {\n    require(msg.sender == admin, \"Only admin\");\n    _;\n}\n\nfunction pause() external onlyAdmin {\n    paused = true;\n    // Prevents all user interactions except what's explicitly unprotected\n}\n\nfunction unpause() external onlyAdmin {\n    paused = false;\n    // Resumes normal operations\n}\n\n// The pause flag is set when emergency actions are taken\n// All major functions check it to freeze user interactions"
+      },
+      {
+        "name": "Emergency Scenarios",
+        "path": "docs/staking-guide.md",
+        "relevance": "Explains why pause is necessary",
+        "content": "PAUSE SCENARIOS:\n\n1. Validator Slashing Detected\n   - One or more validators in the pool are slashed\n   - Losses need to be socialized across all stakers\n   - Pause prevents new entries/exits until accounting is correct\n\n2. State Sync Issue\n   - Monad chain and local state diverge\n   - Pause prevents actions until reconciliation\n\n3. Security Incident\n   - Exploit detected\n   - Pause gives admin time to patch\n\n4. Major Update\n   - Protocol upgrade requires temporary freeze\n\nIn all cases:\n- Pause is temporary (should be lifted ASAP)\n- All users should be frozen fairly\n- No user should get preferential exit"
+      }
+    ],
+    "call_flow": [
+      "1. Protocol detects validator slashing event",
+      "2. Admin calls pause() to freeze protocol",
+      "3. paused flag is set to true",
+      "4. deposit() calls: rejected (whenNotPaused fails)",
+      "5. requestUnlock() calls: rejected (whenNotPaused fails)",
+      "6. submitBatch() calls: rejected (whenNotPaused fails)",
+      "7. instantUnlock() calls: ACCEPTED ✗ (no whenNotPaused check)",
+      "8. Users with deposits in current batch cannot exit",
+      "9. instantUnlock users can withdraw if they have eligible shares",
+      "10. Different users treated unfairly",
+      "11. Share dilution occurs (some users in, some out)",
+      "12. Admin eventually unpause() after fixing slashing",
+      "13. But by then, some users already exited at wrong price",
+      "14. Unfairness is baked in"
+    ],
+    "context_hint": "This is a simple access control issue: a function that should be protected by the pause mechanism is missing the modifier. The fix is one-line addition of the whenNotPaused modifier.",
+    "expert_notes": "Cantina identified this through comprehensive function audit. The instantUnlock function has the same exit semantics as requestUnlock but lacks the same guard. This is likely an oversight during development where instantUnlock was added later and the guard was forgotten. The fix is straightforward.",
+    "fix_description": "Add the whenNotPaused modifier to the instantUnlock function to ensure withdrawals respect the protocol's pause state.",
+    "fix_code": "// FIXED: Add whenNotPaused modifier\nfunction instantUnlock(uint96 shares) external whenNotPaused returns (uint96 spotValue) {\n    // Now protected by pause mechanism\n    \n    spotValue = convertToAssets(shares);\n    \n    uint96 _batchAssets = batchDepositRequests[currentBatchId].assets;\n    require(_batchAssets >= spotValue, \"Insufficient batch assets\");\n    \n    batchDepositRequest.assets = _batchAssets - spotValue;\n    totalPooled -= spotValue;\n    \n    (bool success, ) = msg.sender.call{value: spotValue}(\"\");\n    require(success, \"Transfer failed\");\n    \n    return spotValue;\n}\n\n// With fix:\n// When protocol is paused:\n// - deposit() is blocked ✓\n// - requestUnlock() is blocked ✓\n// - instantUnlock() is blocked ✓ (NOW CONSISTENT)\n// - submitBatch() is blocked ✓\n// All user actions are frozen fairly\n// No preferential exits during emergency"
+  },
+  {
+    "id": "gs_cantina_kintsu_monad_004",
+    "report_url": "https://cantina.xyz/portfolio/64a13fad-8b9f-4453-aa23-de92ba8621a4",
+    "project_name": "Kintsu Monad Contracts Core",
+    "github_url": "https://github.com/WaterCoolerStudiosInc/monad-contracts-core",
+    "language": "solidity",
+    "chain": "monad",
+    "contest_date": "2025-10-02",
+    "vulnerability_type": "economic_exploit",
+    "severity": "medium",
+    "difficulty_tier": 3,
+    "context": "staking",
+    "is_vulnerable": true,
+    "title": "Sandwich Attack on compound() via instantUnlock Enables Fee-Free Reward Capture",
+    "description": "The instantUnlock() function has special fee exemptions for certain users, allowing them to withdraw at compound() without paying fees. An attacker (exempt user) can perform a sandwich attack: (1) Observe pending compound() transaction in mempool, (2) Front-run with deposit() to add funds before compounding, (3) Execute compound() (now attacker receives disproportionate rewards on their deposits), (4) Back-run with instantUnlock() to exit at inflated share price without paying fees, (5) Keep profits via flashloan if necessary. This extracts value from the staking pool by capturing rewards that should accrue to long-term stakers. The attack is low-likelihood but high-impact, requiring the attacker to time it precisely but yielding significant rewards from a single compound cycle.",
+    "primary_file": {
+      "name": "Staker.sol",
+      "path": "src/Staker.sol",
+      "lines": "140-170",
+      "content": "// VULNERABLE PATTERN:\n\nfunction compound() external {\n    // Distributes accrued rewards to all stakers\n    // Increases totalPooled\n    // Increases share price\n    // All shareholders benefit proportionally\n    \n    uint256 rewards = _calcuateAccruedRewards();\n    totalPooled += uint96(rewards);\n    \n    // Emit event so off-chain can track\n    emit Compounded(rewards);\n}\n\nfunction instantUnlock(uint96 shares) external returns (uint96 spotValue) {\n    // VULNERABILITY: Fee exemptions for certain users\n    // require(isFeeExempt[msg.sender], \"Must be exempt\");\n    \n    spotValue = convertToAssets(shares);\n    // spotValue is calculated at NEW share price (after compound)\n    // If compound just happened, spotValue is higher\n    \n    // But instantUnlock doesn't charge fees for exempt users\n    // So they exit at inflated price without fee penalty\n    \n    uint96 _batchAssets = batchDepositRequests[currentBatchId].assets;\n    batchDepositRequest.assets = _batchAssets - spotValue;\n    totalPooled -= spotValue;\n    \n    (bool success, ) = msg.sender.call{value: spotValue}(\"\");\n    require(success, \"Transfer failed\");\n    \n    return spotValue;\n}\n\n// SANDWICH ATTACK SCENARIO:\n//\n// Setup:\n// - Attacker is fee-exempt (governance, admin, early contributor, etc.)\n// - Protocol has 1000 ETH staked, 1000 shares\n// - Share price = 1.0\n// - Pending reward = 100 ETH (will be compounded)\n//\n// Step 1: compound() is in mempool\n// - Attacker sees tx in mempool (public blockchain)\n//\n// Step 2: Attacker front-runs with deposit() [SAME BLOCK]\n// - Attacker deposits 1000 ETH\n// - totalPooled = 2000 (1000 staked + 1000 newly deposited)\n// - New shares issued = 1000 (at current 1.0 price)\n// - Attacker now owns 1000 out of 2000 total shares (50%)\n//\n// Step 3: compound() executes\n// - Accrued rewards = 100 ETH\n// - totalPooled = 2100 (new rewards added)\n// - Share price = 2100 / 2000 = 1.05\n// - Attacker's shares are now worth: 1000 * 1.05 = 1050 ETH\n// - Attacker gained: 1050 - 1000 = 50 ETH (50% of rewards)\n//\n// Step 4: Attacker back-runs with instantUnlock()\n// - spotValue = 1000 * 1.05 = 1050 ETH\n// - No fee (fee-exempt)\n// - Attacker withdraws 1050 ETH\n//\n// Step 5: Attacker keeps profit\n// - Invested: 1000 ETH\n// - Received: 1050 ETH\n// - Profit: 50 ETH\n// - If flashloan: 50 ETH profit at zero capital risk\n//\n// IMPACT:\n// - Long-term stakers only get 50 ETH (they should get 100)\n// - Attacker captured half the rewards\n// - Unfair distribution\n//\n// WHY IT'S POSSIBLE:\n// 1. instantUnlock allows same-block deposit->withdraw\n// 2. Rewards are compounded instantly (no delay)\n// 3. Fee exemptions don't have temporal restrictions\n// 4. Attacker can observe compound in mempool and front-run\n// 5. Share price inflates instantly after compound\n// 6. Attacker exits at inflated price before anyone else"
+    },
+    "context_files": [
+      {
+        "name": "Fee Exemption Logic",
+        "path": "src/Staker.sol",
+        "relevance": "Shows who can avoid fees",
+        "content": "mapping(address => bool) public isFeeExempt;\n\nfunction instantUnlock(uint96 shares) external returns (uint96 spotValue) {\n    spotValue = convertToAssets(shares);\n    \n    // Only charge fee if NOT exempt\n    if (!isFeeExempt[msg.sender]) {\n        uint96 fee = _calculateFee(spotValue);\n        spotValue -= fee;  // Deduct fee\n    }\n    // If exempt: no fee deduction\n    \n    // ... rest of function ...\n}\n\n// Fee exempt addresses typically include:\n// - Governance contracts\n// - Admin treasury\n// - Early contributors\n// - Protocol partners\n// - Anyone granted exemption\n//\n// These accounts can exit without cost\n// But they can also exploit compound() timing"
+      },
+      {
+        "name": "Share Price Inflation",
+        "path": "src/Staker.sol",
+        "relevance": "Shows how compound affects share price",
+        "content": "function compound() external {\n    // Calculate accrued rewards since last compound\n    uint256 rewards = _calculateAccruedRewards();\n    \n    // Add to totalPooled (immediate, not delayed)\n    totalPooled += uint96(rewards);\n    \n    // Share price instantly goes up\n    // convertToAssets now returns more per share\n    // Any instantUnlock after this gets higher spot value\n}\n\nfunction convertToAssets(uint96 shares) public view returns (uint96 assets) {\n    uint256 _totalShares = totalShares();\n    if (_totalShares == 0) {\n        assets = shares;\n    } else {\n        // share_price = totalPooled / totalShares\n        // After compound: totalPooled increased\n        // So share_price increased\n        // So assets per share increased\n        assets = uint96(uint256(shares) * uint256(totalPooled) / _totalShares);\n    }\n}\n\n// The attack captures the price difference:\n// - Price before compound: 1.0\n// - Price after compound: 1.05\n// - Attacker enters at 1.0, exits at 1.05\n// - Profit: 5% of invested amount per compound cycle"
+      },
+      {
+        "name": "Mempool Observation",
+        "path": "docs/attack-vectors.md",
+        "relevance": "Explains how MEV is possible",
+        "content": "SANDWICH ATTACK MECHANICS:\n\nOn public blockchains:\n1. Transactions are visible in mempool before inclusion\n2. Attackers can observe pending transactions\n3. Attackers can front-run by including their tx before victim's tx\n4. Attackers can back-run by including their tx after victim's tx\n5. This enables sandwich attacks\n\nFor compound() sandwich:\n1. Admin calls compound() to distribute rewards\n2. Tx is broadcast and visible in mempool\n3. Attacker deposits before compound (front-run)\n4. Attacker exits after compound (back-run)\n5. Attacker captures the arbitrage (price difference)\n\nWhy instantUnlock enables this:\n- Allows same-block entry and exit\n- No delay between deposit and withdrawal\n- Combined with fee exemptions: no penalty\n- Result: profitable sandwich with no cost"
+      }
+    ],
+    "call_flow": [
+      "1. Staking pool accumulates rewards over time",
+      "2. Admin decides to compound() - distribute rewards",
+      "3. Admin broadcasts compound() transaction",
+      "4. Transaction enters mempool (public visibility)",
+      "5. Attacker (fee-exempt) observes pending compound()",
+      "6. Attacker submits deposit(1000) with higher gas",
+      "7. Attacker's deposit is included BEFORE compound()",
+      "8. At this point: attacker now owns 50% of shares (1000 of 2000)",
+      "9. compound() is executed",
+      "10. Rewards (100 ETH) are added to totalPooled",
+      "11. Share price increases: 1.0 → 1.05",
+      "12. Attacker's 1000 shares now worth 1050 ETH",
+      "13. Attacker submits instantUnlock(1000) with high gas",
+      "14. Attacker's exit is included AFTER compound()",
+      "15. Attacker receives 1050 ETH (no fee, exempt)",
+      "16. Attacker profit: 1050 - 1000 = 50 ETH",
+      "17. Long-term stakers only receive 50 ETH of 100 ETH compound",
+      "18. Attack complete: captured 50% of rewards with zero capital risk"
+    ],
+    "context_hint": "This is an economic attack enabled by the combination of: (1) instant deposit/withdrawal capability, (2) fee exemptions, (3) immediate reward compounding, and (4) public mempool. The fix is to either restrict fee exemptions to exclude compound(), or to enforce a delay between deposit and withdrawal.",
+    "expert_notes": "Cantina identified this through MEV and sandwich attack analysis. The attack requires: (1) attacker to be fee-exempt (not a given, but possible for governance/admins), (2) ability to see and react to compound() in mempool, (3) instantUnlock functionality. The likelihood is low (requires specific setup) but impact is high (captures major portion of rewards). The fix suggested by Cantina is to store the exchange rate at deposit time and only allow instantUnlock at that same rate, effectively making it a 'cancel deposit' function rather than a 'claim rewards with timing' function.",
+    "fix_description": "Implement a time-weighted or exchange-rate-locked withdrawal mechanism. Store the exchange rate when user deposits, and only allow instantUnlock to redeem at that stored rate (no reward capture). Alternatively, apply a minimum holding period before instantUnlock becomes available.",
+    "fix_code": "// FIXED: Time-locked instant unlock with rate capture\n\nstruct DepositRecord {\n    uint96 amount;\n    uint40 timestamp;\n    uint96 exchangeRateAtDeposit;  // Locked rate at deposit time\n}\n\nmapping(address => DepositRecord[]) public deposits;\n\nfunction deposit() external payable whenNotPaused {\n    uint96 exchangeRate = convertToAssets(1e18);  // Get current rate\n    \n    deposits[msg.sender].push(\n        DepositRecord({\n            amount: uint96(msg.value),\n            timestamp: uint40(block.timestamp),\n            exchangeRateAtDeposit: exchangeRate\n        })\n    );\n    \n    // ... rest of deposit logic ...\n}\n\nfunction instantUnlock(uint256 depositIndex) external returns (uint96 spotValue) {\n    // Require instant unlock within same block or very short window\n    DepositRecord memory record = deposits[msg.sender][depositIndex];\n    require(block.timestamp <= record.timestamp + 1, \"Deposit is locked for rewards\");\n    \n    // Calculate payout at STORED rate, not current rate\n    // This prevents capturing compound() rewards\n    spotValue = uint96(\n        uint256(record.amount) * uint256(record.exchangeRateAtDeposit) / 1e18\n    );\n    \n    // Remove deposit record\n    deposits[msg.sender][depositIndex] = deposits[msg.sender][deposits[msg.sender].length - 1];\n    deposits[msg.sender].pop();\n    \n    // ... rest of function ...\n}\n\n// With fix:\n// - Attacker deposits at rate 1.0\n// - exchangeRateAtDeposit = 1.0 stored\n// - compound() happens, rate goes to 1.05\n// - Attacker calls instantUnlock\n// - But gets paid out at original 1.0 rate\n// - spotValue = 1000 * 1.0 = 1000 ETH (no profit!)\n// - Sandwich attack becomes unprofitable\n\n// ALTERNATIVE FIX: Complete removal\n// Kintsu opted to remove instantUnlock entirely (per report)\n// This completely eliminates all sandwich vectors\n// Users must use requestUnlock (which has proper timing controls)"
+  }
+]

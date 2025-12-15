@@ -1,0 +1,77 @@
+[
+  {
+    "id": "gs_cantina_coinbase_flywheel_001",
+    "subset": "gold_standard",
+    "language": "solidity",
+    "chain": "base",
+    "source_platform": "cantina",
+    "source_report": "Coinbase Flywheel",
+    "source_finding_id": "CRITICAL-1",
+    "report_url": "https://cantina.xyz/portfolio/42fb7c2a-ff43-4d64-a061-67ee016f8d6d",
+    "github_repo_url": "https://github.com/coinbase/flywheel-contracts",
+    "contest_date": "2025-09-15",
+    "severity": "critical",
+    "vulnerability_type": "asset_locking",
+    "difficulty_tier": 2,
+    "context_level": "cross_contract",
+    "finding_title": "Flywheel does not support native tokens, leading to funds being locked in campaigns",
+    "finding_description": "The Campaign contract is designed to accept native tokens as a funding source, but its solvency checks do not support them. Functions that rely on _assertCampaignSolvency, such as send(), allocate(), deallocate(), distribute(), distributeFees(), and withdrawFunds(), will revert if the campaign holds native tokens. This results in any native tokens sent to Campaign contracts becoming permanently locked, as there is no mechanism to withdraw them once the solvency check starts failing.",
+    "attack_scenario": "1. A user creates a campaign and funds it with native tokens (e.g., ETH) by calling createCampaign() with a non-zero msg.value.\n2. The native tokens are successfully transferred to the newly created Campaign contract.\n3. The user later attempts to withdraw the funds by calling withdrawFunds().\n4. The withdrawFunds() function calls _assertCampaignSolvency(), which does not account for native token balances.\n5. The solvency check fails because the contract's ERC20 token balances do not cover its liabilities, even though the native token balance would.\n6. The transaction reverts, and the user's native tokens remain permanently locked in the Campaign contract.",
+    "fix_description": "The recommendation is to add support for native token balance checks in the _assertCampaignSolvency() and withdrawFunds() functions. This ensures that the solvency calculations and withdrawal mechanisms correctly account for all assets held by the campaign, preventing funds from becoming locked.",
+    "primary_file": {
+      "path": "src/Campaign.sol",
+      "content": "pragma solidity ^0.8.19;\n\nimport {Flywheel} from \"./Flywheel.sol\";\nimport {Owned} from \"solady/auth/Owned.sol\";\nimport {LibClone} from \"solady/utils/LibClone.sol\";\n\ncontract Campaign is Owned {\n    /// @dev The Flywheel contract that created this campaign.\n    Flywheel public immutable flywheel;\n\n    /// @dev The campaign data.\n    Flywheel.CampaignData public data;\n\n    /// @dev The implementation of the campaign hook.\n    address public immutable hook;\n\n    /// @dev The ERC-20 token used for rewards.\n    address public immutable rewardToken;\n\n    /// @dev The total amount of rewards distributed.\n    uint256 public totalRewardsDistributed;\n\n    /// @dev The total amount of fees collected.\n    uint256 public totalFeesCollected;\n\n    /// @dev The amount of rewards allocated to a builder.\n    mapping(address => uint256) public allocatedRewards;\n\n    /// @dev The amount of rewards distributed to a builder.\n    mapping(address => uint256) public distributedRewards;\n\n    constructor(\n        address flywheel_,
+        address owner_,
+        Flywheel.CampaignData memory data_,
+        address hook_,
+        address rewardToken_
+    ) {
+        flywheel = Flywheel(flywheel_);
+        owner = owner_;
+        data = data_;
+        hook = hook_;
+        rewardToken = rewardToken_;
+    }
+
+    function send(
+        address[] calldata builders,
+        bytes[] calldata contexts,
+        uint256[] calldata amounts
+    ) external virtual {
+        _assertCampaignSolvency();
+        // Additional logic for sending rewards...
+    }
+
+    function _assertCampaignSolvency() internal view {
+        uint256 totalBalances = IERC20(rewardToken).balanceOf(address(this));
+        uint256 totalLiabilities = totalRewardsDistributed + totalFeesCollected;
+        require(totalBalances >= totalLiabilities, "Campaign insolvency");
+    }
+    \n    function withdrawFunds(address to, uint256 amount) external onlyOwner {
+        _assertCampaignSolvency();
+        require(to != address(0), "Invalid address");
+        require(amount > 0, "Invalid amount");
+
+        uint256 availableToWithdraw = address(this).balance;
+        require(amount <= availableToWithdraw, "Insufficient balance");
+
+        (bool success, ) = to.call{value: amount}("");
+        require(success, "Transfer failed");
+    }
+}",
+      "vulnerable_lines": [
+        54,
+        60
+      ],
+      "vulnerable_functions": [
+        "_assertCampaignSolvency",
+        "withdrawFunds"
+      ]
+    },
+    "context_files": [],
+    "call_flow": "createCampaign() -> withdrawFunds() -> _assertCampaignSolvency()",
+    "context_hint": "The contract's solvency check only considers ERC20 token balances, ignoring any native tokens (like ETH) held by the contract. This oversight means that if a campaign is funded with native tokens, the solvency check will incorrectly fail, preventing any further actions and locking the funds.",
+    "is_vulnerable": true,
+    "expert_notes": "This is a classic example of incomplete asset support in a contract. The `_assertCampaignSolvency` function only checks the balance of the `rewardToken` and does not account for the native token balance of the contract. When native tokens are sent to the contract, they are not reflected in the solvency check, leading to an incorrect assessment of the campaign's financial health. This oversight makes it impossible to withdraw the native tokens, as the `withdrawFunds` function will always revert due to the failing solvency check."
+  }
+]

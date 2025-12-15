@@ -1,0 +1,74 @@
+[
+  {
+    "id": "gs_cantina_panoptic_merkle_distributor_001",
+    "report_url": "https://cantina.xyz/portfolio/e3bd3b17-f13a-4b0d-b929-19bf3266c9ce",
+    "project_name": "Panoptic: MultiToken Merkle Distributor",
+    "github_url": "https://github.com/panoptic-labs/multitoken-merkle-distributor",
+    "language": "solidity",
+    "chain": "ethereum",
+    "contest_date": "2025-09-16",
+    "vulnerability_type": "missing_access_control",
+    "severity": "medium",
+    "difficulty_tier": 2,
+    "context": "merkle_distribution",
+    "is_vulnerable": true,
+    "title": "Anyone Can Claim Tokens for Any Account - Claim Authorization Bypass",
+    "description": "The claim() function allows any third party to execute token claims on behalf of any account without verification. While tokens are sent to the account encoded in the Merkle leaf, this creates a critical issue: if a leaf contains an incorrect account address (due to off-chain data corruption, typo, or malicious inclusion), a third party can preemptively claim those tokens to the wrong address, permanently preventing the legitimate recipient from recovering their allocation through the admin's withdrawUnclaimed mechanism. This is a classic authorization bypass that violates the principle that only the rightful owner should be able to claim their tokens.",
+    "primary_file": {
+      "name": "MultiTokenMerkleDistributor.sol",
+      "path": "src/MultiTokenMerkleDistributor.sol",
+      "lines": "120-145",
+      "content": "// VULNERABLE: Anyone can claim for any account\nfunction claim(\n    address account,\n    address[] calldata tokens,\n    uint256[] calldata amounts,\n    bytes32[] calldata merkleProof\n) external nonReentrant {\n    // @audit NO ACCESS CONTROL: msg.sender is not validated\n    // The function accepts arbitrary 'account' parameter\n    // Any third party can call this function\n    \n    // Verify the claim is valid according to Merkle proof\n    bytes32 node = keccak256(\n        abi.encode(account, tokens, amounts)\n    );\n    require(\n        MerkleProof.verify(merkleProof, merkleRoot, node),\n        \"Invalid Merkle proof\"\n    );\n    \n    // Verify claim hasn't been made already\n    require(\n        !hasClaimed[node],\n        \"Already claimed\"\n    );\n    \n    // Mark as claimed\n    hasClaimed[node] = true;\n    \n    // @audit CRITICAL: Tokens sent to 'account' parameter\n    // If 'account' is wrong (typo, data corruption, attack),\n    // any third party can claim to that wrong address\n    // The legitimate owner cannot recover their tokens\n    for (uint256 i = 0; i < tokens.length; ++i) {\n        IERC20(tokens[i]).safeTransfer(\n            account,  // @audit Tokens go to whoever is in the leaf\n            amounts[i]\n        );\n    }\n    \n    emit Claimed(account, tokens, amounts);\n}"
+    },
+    "context_files": [
+      {
+        "name": "Claim Tracking Mechanism",
+        "path": "src/MultiTokenMerkleDistributor.sol",
+        "relevance": "Shows how claims are marked as used, preventing double-claims but not protecting from misrouting",
+        "content": "contract MultiTokenMerkleDistributor {\n    // Maps Merkle leaf node hash to whether it has been claimed\n    mapping(bytes32 => bool) public hasClaimed;\n    \n    // The Merkle root defining all valid claims\n    bytes32 public merkleRoot;\n    \n    // Admin who can withdraw unclaimed tokens after deadline\n    address public admin;\n    \n    // Timestamp after which admin can withdraw unclaimed tokens\n    uint256 public withdrawableAt;\n    \n    // Vulnerability: hasClaimed only prevents double-claiming\n    // It does NOT prevent third parties from claiming to wrong addresses\n    // Once a claim is marked as true, even if sent to wrong address,\n    // the tokens cannot be recovered or re-claimed\n}"
+      },
+      {
+        "name": "Admin Recovery Function (Cannot Recover Misrouted Claims)",
+        "path": "src/MultiTokenMerkleDistributor.sol",
+        "relevance": "Shows the admin's inability to recover tokens claimed to wrong addresses",
+        "content": "// Admin can only withdraw unclaimed tokens (after deadline)\nfunction withdrawUnclaimed(\n    address[] calldata tokens,\n    address recipient\n) external onlyAdmin {\n    require(\n        block.timestamp >= withdrawableAt,\n        \"Withdrawal not yet available\"\n    );\n    \n    // @audit Cannot recover tokens claimed to wrong address\n    // If a third party called claim() with wrong account,\n    // and tokens were transferred to that wrong account,\n    // those tokens cannot be recovered by the admin\n    // because hasClaimed[node] = true\n    \n    for (uint256 i = 0; i < tokens.length; ++i) {\n        uint256 balance = IERC20(tokens[i]).balanceOf(address(this));\n        if (balance > 0) {\n            IERC20(tokens[i]).safeTransfer(recipient, balance);\n        }\n    }\n}"
+      },
+      {
+        "name": "Merkle Leaf Structure Definition",
+        "path": "src/MultiTokenMerkleDistributor.sol",
+        "relevance": "Shows what data is encoded in each Merkle leaf",
+        "content": "// Each Merkle leaf encodes:\nstruct ClaimData {\n    address account;              // Recipient address (from Merkle tree)\n    address[] tokens;             // Tokens to claim\n    uint256[] amounts;            // Amounts of each token\n}\n\n// The leaf hash is computed as:\nbytes32 leafHash = keccak256(\n    abi.encode(account, tokens, amounts)\n);\n\n// @audit Vulnerability: account comes from Merkle tree\n// If Merkle tree contains wrong account (typo, data error),\n// any third party can claim to that wrong address\n// The legitimate recipient cannot recover their tokens"
+      },
+      {
+        "name": "Proof of Concept - Malicious Claim to Wrong Address",
+        "path": "tests/MultiTokenMerkleDistributor.test.sol",
+        "relevance": "Shows concrete exploit where third party claims to wrong address",
+        "content": "function test_thirdPartyClaimsToWrongAddress() public {\n    // Setup: Merkle tree contains claim for Alice\n    address alice = makeAddr(\"alice\");\n    address bob = makeAddr(\"bob\");\n    address attacker = makeAddr(\"attacker\");\n    \n    // Merkle leaf is supposed to be: (alice, [USDC], [1000e6])\n    // But due to off-chain data error, leaf actually encodes: (wrongAccount, [USDC], [1000e6])\n    address wrongAccount = makeAddr(\"wrong_account\");\n    \n    bytes32[] memory tokens = new bytes32[](1);\n    tokens[0] = USDC;\n    uint256[] memory amounts = new uint256[](1);\n    amounts[0] = 1000e6;\n    \n    // Compute the Merkle proof for this leaf\n    bytes32[] memory proof = generateProof(wrongAccount, tokens, amounts);\n    \n    // Attacker calls claim with wrongAccount from the Merkle tree\n    vm.prank(attacker);  // Anyone can call\n    distributor.claim(\n        wrongAccount,  // @audit From Merkle tree (wrong address)\n        [USDC],\n        [1000e6],\n        proof\n    );\n    \n    // Tokens sent to wrong address\n    assertEq(USDC.balanceOf(wrongAccount), 1000e6);\n    assertEq(USDC.balanceOf(alice), 0);  // Alice gets nothing\n    \n    // Alice cannot recover her tokens\n    // She cannot call claim() because hasClaimed[node] = true\n    // Admin cannot withdraw them because they're not in the contract\n    // Alice's 1000 USDC is permanently lost\n    \n    vm.prank(alice);\n    vm.expectRevert(\"Already claimed\");\n    distributor.claim(wrongAccount, [USDC], [1000e6], proof);\n}\n\nfunction test_thirdPartyPreventsClaimRecovery() public {\n    // Scenario: Merkle tree has a typo\n    // Intended: alice = 0x1111...1111\n    // Actual:  alice = 0x1111...1112 (off by one)\n    \n    address alice = makeAddr(\"alice\");\n    address wrongAlice = makeAddr(\"wrong_alice\");\n    address attacker = makeAddr(\"attacker\");\n    \n    // USDC already in contract waiting to be claimed\n    deal(USDC, address(distributor), 1000e6);\n    \n    // Attacker spots the typo and calls claim for wrongAlice\n    vm.prank(attacker);\n    bytes32[] memory proof = getMerkleProof(wrongAlice);\n    distributor.claim(\n        wrongAlice,\n        [USDC],\n        [1000e6],\n        proof\n    );\n    \n    // USDC sent to wrong address\n    assertEq(USDC.balanceOf(wrongAlice), 1000e6);\n    assertEq(USDC.balanceOf(address(distributor)), 0);\n    \n    // Now alice (the real recipient) cannot recover\n    // She owns the private key for 0x1111...1111\n    // But the Merkle tree has 0x1111...1112\n    // Admin cannot help her because:\n    // 1. No unclaimed tokens left in contract\n    // 2. hasClaimed[node] is marked true\n    // 3. Even if admin calls withdrawUnclaimed, contract is empty\n    \n    // Result: alice loses 1000 USDC permanently\n}"
+      }
+    ],
+    "call_flow": [
+      "1. Merkle tree is created off-chain with claim data",
+      "2. Merkle root deployed to contract",
+      "3. Tokens transferred to contract for distribution",
+      "4. Scenario A (Data Corruption):",
+      "   - Off-chain process has typo/error in account address",
+      "   - Merkle leaf encodes wrong account",
+      "5. Scenario B (Malicious Merkle Tree):",
+      "   - Attacker influences off-chain data",
+      "   - Intentionally includes wrong account in Merkle tree",
+      "6. Third party discovers the claim opportunity",
+      "7. Third party calls claim(wrongAccount, tokens, amounts, proof)",
+      "8. No require() check validates msg.sender == account",
+      "9. Merkle proof verified successfully (proof is valid for the leaf)",
+      "10. hasClaimed[node] = true (marked as claimed)",
+      "11. Tokens transferred to wrongAccount (not the legitimate owner)",
+      "12. Legitimate owner cannot recover tokens",
+      "13. Admin cannot recover because hasClaimed is true",
+      "14. Tokens permanently sent to wrong address"
+    ],
+    "context_hint": "This is an authorization bypass vulnerability where the claim function lacks access control. Any caller can claim on behalf of any account. While the Merkle proof ensures the claim is valid per the tree, the tree itself may contain errors or be compromised. The function should require that either msg.sender == account or the claim is signed by the account.",
+    "expert_notes": "Cantina identified this through access control analysis of the claim function. The vulnerability assumes the Merkle tree is 100% accurate, but off-chain data generation is error-prone. If the tree contains a wrong account (due to typo, data corruption, or compromise), the tokens cannot be recovered. The fix is simple: either require msg.sender == account or add a signature from the account to authorize the claim.",
+    "fix_description": "Add access control to ensure only the intended recipient (msg.sender) or an authorized party (via signature) can claim tokens. The most straightforward fix is to require msg.sender == account, or use a signature-based approach where the account must authorize the claim.",
+    "fix_code": "// FIXED: Require caller is the intended recipient\nfunction claim(\n    address account,\n    address[] calldata tokens,\n    uint256[] calldata amounts,\n    bytes32[] calldata merkleProof\n) external nonReentrant {\n    // FIX: Only the account can claim their own tokens\n    require(msg.sender == account, \"Unauthorized: Only recipient can claim\");\n    \n    bytes32 node = keccak256(\n        abi.encode(account, tokens, amounts)\n    );\n    require(\n        MerkleProof.verify(merkleProof, merkleRoot, node),\n        \"Invalid Merkle proof\"\n    );\n    \n    require(\n        !hasClaimed[node],\n        \"Already claimed\"\n    );\n    \n    hasClaimed[node] = true;\n    \n    for (uint256 i = 0; i < tokens.length; ++i) {\n        IERC20(tokens[i]).safeTransfer(account, amounts[i]);\n    }\n    \n    emit Claimed(account, tokens, amounts);\n}\n\n// RESULT:\n// - Only the intended recipient can claim their tokens\n// - Third parties cannot claim to wrong addresses\n// - If account in Merkle tree is wrong, legitimate owner knows\n// - Admin can still use withdrawUnclaimed for truly unclaimed tokens\n// - Recovery mechanism works correctly"
+  }
+]

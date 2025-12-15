@@ -1,0 +1,70 @@
+[
+  {
+    "id": "gs_cantina_sablier_staking_001",
+    "report_url": "https://cantina.xyz/portfolio/51abffbd-9827-45e6-93b9-e9179d2e3477",
+    "project_name": "Sablier Labs: Staking",
+    "github_url": "https://github.com/sablier-labs/staking",
+    "language": "solidity",
+    "chain": "ethereum",
+    "contest_date": "2025-10-02",
+    "vulnerability_type": "denial_of_service",
+    "severity": "medium",
+    "difficulty_tier": 2,
+    "context": "staking",
+    "is_vulnerable": true,
+    "title": "Stream Recipient Can Block Sender's Cancellation by Transferring NFT Directly to Staking Contract",
+    "description": "The SablierStaking contract implements a hook onSablierLockupCancel that is triggered when a stream is cancelled. This hook is designed to handle unstaking of the cancelled stream amount from any active pool. However, the hook reverts if the NFT is not currently staked (poolId == 0). A stream recipient can exploit this by front-running the stream sender's cancellation transaction: the recipient withdraws the streamed balance and sends the Lockup NFT directly to the staking contract (without staking it). When the NFT arrives at the contract, poolId remains 0, causing the cancellation hook to revert with SablierStaking_StreamNotStaked. This denies the stream sender the ability to cancel and recover their remaining unstreamed funds, effectively freezing the sender's capital until the NFT is transferred or staked elsewhere.",
+    "primary_file": {
+      "name": "SablierStaking.sol",
+      "path": "src/SablierStaking.sol",
+      "lines": "378-390",
+      "content": "function onSablierLockupCancel(\n    uint256 streamId,\n    address, /* sender */\n    uint128 senderAmount,\n    uint128 /* recipientAmount */\n)\n    external\n    override\n    noDelegateCall\n    returns (bytes4)\n{\n    // Cast `msg.sender` as the Lockup NFT.\n    ISablierLockupNFT msgSenderAsLockup = ISablierLockupNFT(msg.sender);\n    \n    // Get the Pool ID in which the stream ID is staked.\n    uint256 poolId = _streamsLookup[msgSenderAsLockup][streamId].poolId;\n    \n    // Check: the Pool ID is not zero.\n    // BUG: This reverts if NFT is in staking contract but not staked\n    // Attacker can trigger this revert by sending NFT directly to contract\n    if (poolId == 0) {\n        revert Errors.SablierStaking_StreamNotStaked(msgSenderAsLockup, streamId);\n    }\n    \n    // Load the storage in memory.\n    address owner = _streamsLookup[msgSenderAsLockup][streamId].owner;\n    uint128 streamAmountStaked = _userAccounts[owner][poolId].streamAmountStaked;\n    \n    // Checks and Effects: unstake the `senderAmount` for the user.\n    _unstake({ poolId: poolId, unstakeAmount: senderAmount, maxAllowed: streamAmountStaked, user: owner });\n    \n    // Safe to use `unchecked` because `_unstake` verifies that `senderAmount` does not exceed `streamAmountStaked`.\n    unchecked {\n        // Effect: decrease the user's stream amount staked.\n        _userAccounts[owner][poolId].streamAmountStaked = streamAmountStaked - senderAmount;\n    }\n    return ISablierLockupRecipient.onSablierLockupCancel.selector;\n}\n\n// BUG DETAILS:\n// The revert happens when:\n// 1. Stream is created from sender to recipient\n// 2. Recipient receives the Lockup NFT\n// 3. Recipient withdraws streamed balance\n// 4. Recipient sends NFT directly to SablierStaking contract\n// 5. NFT is now in contract but not staked (poolId == 0)\n// 6. Sender calls cancel() on Lockup to recover unstreamed funds\n// 7. Lockup notifies SablierStaking via onSablierLockupCancel hook\n// 8. Hook queries _streamsLookup[lockupAddress][streamId].poolId\n// 9. poolId is 0 (NFT never staked, just transferred)\n// 10. Hook reverts: SablierStaking_StreamNotStaked\n// 11. Cancellation transaction fails\n// 12. Sender cannot cancel and recover funds\n//\n// IMPACT:\n// - Sender's unstreamed funds are locked\n// - Sender cannot recover capital\n// - Funds become inaccessible until NFT is moved or staked\n// - Gas wasted by sender's failed cancellation attempt"
+    },
+    "context_files": [
+      {
+        "name": "Stream Lookup Storage",
+        "path": "src/SablierStaking.sol",
+        "relevance": "Shows how NFT staking state is tracked",
+        "content": "// Mapping tracks which pool an NFT stream is staked in\nmapping(ISablierLockupNFT lockup => mapping(uint256 streamId => StreamLookup)) internal _streamsLookup;\n\nstruct StreamLookup {\n    uint256 poolId;      // Pool ID (0 means not staked)\n    address owner;       // User who owns the stake\n}\n\n// When stream is staked:\n// _streamsLookup[lockupAddress][streamId].poolId = poolId (> 0)\n//\n// When stream is transferred but NOT staked:\n// _streamsLookup[lockupAddress][streamId].poolId = 0\n//\n// The cancellation hook assumes poolId > 0\n// But attacker can keep poolId == 0 by never staking"
+      },
+      {
+        "name": "Stake Function (Normal Path)",
+        "path": "src/SablierStaking.sol",
+        "relevance": "Shows how NFT is normally staked",
+        "content": "function stake(uint256 poolId, ISablierLockupNFT lockup, uint256 streamId) external {\n    // Normal path:\n    // 1. User transfers NFT to this contract (via safeTransferFrom)\n    // 2. onERC721Received hook is triggered\n    // 3. Hook calls _stake\n    // 4. _stake records: _streamsLookup[lockup][streamId].poolId = poolId\n    // 5. NFT is now staked\n    //\n    // Attack path:\n    // 1. Recipient sends NFT directly: lockup.safeTransferFrom(recipient, stakingContract, tokenId)\n    // 2. onERC721Received hook is triggered\n    // 3. But attacker does NOT provide poolId (or hook is bypassed)\n    // 4. _streamsLookup[lockup][streamId].poolId remains 0\n    // 5. NFT is in contract but not staked\n    // 6. When sender tries to cancel, hook reverts\n}\n\nfunction onERC721Received(\n    address,\n    address from,\n    uint256 tokenId,\n    bytes calldata data\n) external returns (bytes4) {\n    // This hook is triggered when NFT arrives\n    // data contains encoded poolId\n    // If attacker sends NFT with empty data or invalid data:\n    // - Hook fails to decode or process poolId\n    // - _streamsLookup entry is never created\n    // - poolId defaults to 0\n}\n\n// ATTACK VECTOR:\n// Recipient calls: lockup.safeTransferFrom(msg.sender, stakingContract, tokenId)\n// With invalid onERC721Received data (empty or garbage)\n// Hook receives empty data, cannot decode poolId\n// No entry in _streamsLookup is created\n// _streamsLookup[lockup][streamId].poolId == 0 (default)\n// NFT is in contract, but poolId is 0\n// Later, sender's cancellation reverts"
+      },
+      {
+        "name": "Cancellation Flow (Affected)",
+        "path": "src/SablierStaking.sol",
+        "relevance": "Shows the complete cancellation call chain",
+        "content": "// STREAM CANCELLATION FLOW:\n// 1. Sender calls: lockup.cancel(streamId)\n// 2. Lockup contract validates sender authorization\n// 3. Lockup contract calls: ISablierLockupRecipient(nftOwner).onSablierLockupCancel(...)\n// 4. If nftOwner == stakingContract, this contract's hook is called\n// 5. Hook tries to unstake: poolId = _streamsLookup[lockup][streamId].poolId\n// 6. If poolId == 0, hook reverts\n// 7. Sender's cancellation transaction fails\n// 8. Sender cannot recover funds\n//\n// ATTACK SCENARIO:\n// Day 1: Alice sends 1,000,000 USDC to Bob over 100 days via Lockup\n// Day 1: Bob receives NFT\n// Day 30: Alice wants to cancel and recover 700,000 USDC\n// Day 30 (same block): Bob sees Alice's pending tx\n// Day 30 (Bob front-runs): Bob withdraws streamed USDC and sends NFT directly to SablierStaking\n// Day 30 (continued): Alice's cancel tx is executed\n// Day 30 (result): Cancel hook reverts (poolId == 0)\n// Day 30+ (impact): Alice's 700,000 USDC is locked forever\n// Day 30+ (continued): Alice cannot cancel, NFT is stuck in SablierStaking\n\n// Why NFT can be sent with poolId == 0:\n// 1. onERC721Received expects encoded data with poolId\n// 2. If data is empty or invalid, no _streamsLookup entry is created\n// 3. If onERC721Received reverts, NFT still arrives (if sent via safeTransferFrom)\n// 4. Contract becomes the NFT owner but poolId is never set\n// 5. Hash of _streamsLookup[lockup][streamId] is default (0)\n// \n// LIKELIHOOD:\n// High - Recipient has both motive (prevent sender cancellation) and ability (control NFT)\n// Especially valuable if remaining stream has high value"
+      }
+    ],
+    "call_flow": [
+      "1. Alice creates stream: 1,000,000 USDC to Bob over 100 days",
+      "2. Bob receives Lockup NFT (recipient)",
+      "3. Bob stakes NFT in SablierStaking pool (normal use)",
+      "4. Days pass, Bob earns rewards, Alice updates her mind",
+      "5. Day 30: Alice initiates cancel() tx on Lockup",
+      "6. Day 30 (mempool): Bob observes Alice's pending cancel tx",
+      "7. Day 30 (front-run): Bob withdraws his streamed USDC (~300k)",
+      "8. Day 30 (front-run): Bob unstakes NFT from SablierStaking pool",
+      "9. Day 30 (front-run): Bob transfers NFT to SablierStaking directly",
+      "10. Day 30 (front-run): NFT arrives but onERC721Received fails or gets invalid data",
+      "11. Day 30 (front-run): _streamsLookup entry is never created for this transfer",
+      "12. Day 30 (front-run): poolId remains 0 for this NFT+streamId combination",
+      "13. Day 30 (settle): Alice's cancel tx executes",
+      "14. Day 30 (settle): Lockup calls onSablierLockupCancel hook",
+      "15. Day 30 (settle): Hook queries: poolId = _streamsLookup[lockup][streamId].poolId",
+      "16. Day 30 (settle): poolId is 0 (from step 12)",
+      "17. Day 30 (settle): Hook reverts: SablierStaking_StreamNotStaked",
+      "18. Day 30 (result): Alice's cancel tx fails",
+      "19. Day 30+: Alice cannot cancel stream",
+      "20. Day 30+: 700,000 USDC remains locked until NFT is moved"
+    ],
+    "context_hint": "This is a front-running vulnerability where the recipient can observe the sender's cancellation and block it by putting the NFT in a state where the cancellation hook reverts. The hook assumes an NFT in the contract is staked, but an attacker can violate this assumption.",
+    "expert_notes": "Cantina identified this through hook logic review. The vulnerability exists because: (1) onSablierLockupCancel doesn't distinguish between 'never staked' and 'not currently found', (2) An attacker can send NFT without triggering _streamsLookup registration, (3) The hook reverts instead of being idempotent. The fix is to return early if poolId == 0 instead of reverting, making the hook safe to call regardless of NFT state.",
+    "fix_description": "Replace the revert with an early return when poolId is 0. This makes the hook idempotent and safe to call even if the NFT is not staked. If the NFT is not staked, there is nothing to unstake, so returning the correct selector is the right behavior.",
+    "fix_code": "function onSablierLockupCancel(\n    uint256 streamId,\n    address, /* sender */\n    uint128 senderAmount,\n    uint128 /* recipientAmount */\n)\n    external\n    override\n    noDelegateCall\n    returns (bytes4)\n{\n    // Cast `msg.sender` as the Lockup NFT.\n    ISablierLockupNFT msgSenderAsLockup = ISablierLockupNFT(msg.sender);\n    \n    // Get the Pool ID in which the stream ID is staked.\n    uint256 poolId = _streamsLookup[msgSenderAsLockup][streamId].poolId;\n    \n    // FIXED: Early return instead of revert\n    // If the NFT is not staked, there is nothing to do\n    // The Lockup can safely cancel and no hook side effects are needed\n    if (poolId == 0) {\n        return ISablierLockupRecipient.onSablierLockupCancel.selector;\n    }\n    \n    // Load the storage in memory.\n    address owner = _streamsLookup[msgSenderAsLockup][streamId].owner;\n    uint128 streamAmountStaked = _userAccounts[owner][poolId].streamAmountStaked;\n    \n    // Checks and Effects: unstake the `senderAmount` for the user.\n    _unstake({ poolId: poolId, unstakeAmount: senderAmount, maxAllowed: streamAmountStaked, user: owner });\n    \n    // Safe to use `unchecked` because `_unstake` verifies that `senderAmount` does not exceed `streamAmountStaked`.\n    unchecked {\n        // Effect: decrease the user's stream amount staked.\n        _userAccounts[owner][poolId].streamAmountStaked = streamAmountStaked - senderAmount;\n    }\n    return ISablierLockupRecipient.onSablierLockupCancel.selector;\n}\n\n// WITH FIX:\n// Day 30 (settle): Alice's cancel tx executes\n// Day 30 (settle): Lockup calls onSablierLockupCancel hook\n// Day 30 (settle): Hook queries: poolId = 0 (NFT not staked)\n// Day 30 (settle): Hook early returns (no revert)\n// Day 30 (result): Alice's cancel tx succeeds\n// Day 30 (result): 700,000 USDC is recovered\n// \n// ROBUSTNESS:\n// - Hook is now idempotent\n// - Works whether NFT is staked or not\n// - Handles arbitrary NFT states gracefully\n// - Sender is not blocked by recipient actions\n// - Hook only updates state if poolId > 0 (optimization)"
+  }
+]

@@ -1,0 +1,192 @@
+[
+  {
+    "id": "gs_cantina_coinbase_basebridge_001",
+    "subset": "gold_standard",
+    "language": "rust",
+    "chain": "solana",
+    "source_platform": "cantina",
+    "source_report": "Coinbase: Base Bridge",
+    "source_finding_id": "MEDIUM-1",
+    "report_url": "https://cantina.xyz/portfolio/b819a704-a6e2-486f-bf50-58af8db925f9",
+    "github_repo_url": "https://github.com/base/bridge",
+    "contest_date": "2025-09-10",
+    "severity": "medium",
+    "vulnerability_type": "fee_undercharge",
+    "difficulty_tier": 3,
+    "context_level": "single_file",
+    "finding_title": "Minimum base fee is not respected",
+    "finding_description": "The `refresh_base_fee` function in `solana/programs/bridge/src/common/state/bridge.rs` and `solana/programs/base_relayer/src/internal/eip_1559.rs` does not respect the minimum base fee. If the calculated base fee is below the minimum, the function returns the calculated fee instead of the minimum, which can lead to transactions being stuck or relayers being unprepared for the actual gas costs.",
+    "attack_scenario": "1. The calculated base fee drops below the minimum base fee due to low network activity.\n2. The `refresh_base_fee` function is called.\n3. The function returns the calculated fee, which is lower than the minimum.\n4. A relayer, expecting the minimum fee, is unprepared for the lower fee and may not process the transaction.\n5. The transaction gets stuck in the mempool until the base fee rises again.",
+    "fix_description": "The recommendation is to adjust the fee to the minimum before updating and returning in `refresh_base_fee()` if the calculated base fee is below the minimum.",
+    "primary_file": {
+      "path": "solana/programs/bridge/src/common/state/bridge.rs",
+      "content": "use anchor_lang::prelude::*;
+
+#[account]
+#[derive(Default)]
+pub struct Bridge {
+    pub version: u64,
+    pub owner: Pubkey,
+    pub base_fee: u64,
+    pub window_start_time: u64,
+    pub gas_used_in_window: u64,
+}
+
+impl Bridge {
+    pub fn refresh_base_fee(&mut self, timestamp: u64, gas_config: &GasConfig) -> u64 {
+        let elapsed = timestamp.saturating_sub(self.window_start_time);
+        if elapsed >= gas_config.gas_price_window_seconds {
+            let new_base_fee = self.calculate_base_fee(gas_config);
+            self.base_fee = new_base_fee;
+            self.window_start_time = timestamp;
+            self.gas_used_in_window = 0;
+        }
+        self.base_fee
+    }
+
+    fn calculate_base_fee(&self, gas_config: &GasConfig) -> u64 {
+        let mut new_base_fee = self.base_fee;
+        let gas_target = gas_config.gas_target();
+        if self.gas_used_in_window > gas_target {
+            new_base_fee = self.base_fee.saturating_add(
+                self.base_fee
+                    .saturating_mul(self.gas_used_in_window.saturating_sub(gas_target) as u64)
+                    .saturating_div(gas_target as u64)
+                    .saturating_div(gas_config.gas_price_max_change_denominator as u64),
+            );
+        } else {
+            new_base_fee = self.base_fee.saturating_sub(
+                self.base_fee
+                    .saturating_mul(gas_target.saturating_sub(self.gas_used_in_window) as u64)
+                    .saturating_div(gas_target as u64)
+                    .saturating_div(gas_config.gas_price_max_change_denominator as u64),
+            );
+        }
+        if new_base_fee < gas_config.min_gas_price {
+            return gas_config.min_gas_price;
+        }
+        if new_base_fee > gas_config.max_gas_price {
+            return gas_config.max_gas_price;
+        }
+        new_base_fee
+    }
+}
+
+#[account]
+#[derive(Default)]
+pub struct GasConfig {
+    pub gas_price_window_seconds: u64,
+    pub gas_price_max_change_denominator: u16,
+    pub min_gas_price: u64,
+    pub max_gas_price: u64,
+}",
+      "vulnerable_lines": [
+        13,
+        23
+      ],
+      "vulnerable_functions": [
+        "refresh_base_fee",
+        "calculate_base_fee"
+      ]
+    },
+    "context_files": [],
+    "call_flow": "refresh_base_fee() -> calculate_base_fee()",
+    "context_hint": "The `refresh_base_fee` function fails to enforce the `min_gas_price` when the calculated `new_base_fee` is below it. This can cause issues with transaction processing and relayer incentives.",
+    "is_vulnerable": true,
+    "expert_notes": "The vulnerability is a simple logic error in the `calculate_base_fee` function. The fix is to ensure that the function returns `gas_config.min_gas_price` when `new_base_fee` is less than it. This is a common issue in gas price calculation logic."
+  },
+  {
+    "id": "gs_cantina_coinbase_basebridge_002",
+    "subset": "gold_standard",
+    "language": "rust",
+    "chain": "solana",
+    "source_platform": "cantina",
+    "source_report": "Coinbase: Base Bridge",
+    "source_finding_id": "MEDIUM-2",
+    "report_url": "https://cantina.xyz/portfolio/b819a704-a6e2-486f-bf50-58af8db925f9",
+    "github_repo_url": "https://github.com/base/bridge",
+    "contest_date": "2025-09-10",
+    "severity": "medium",
+    "vulnerability_type": "fee_undercharge",
+    "difficulty_tier": 3,
+    "context_level": "single_file",
+    "finding_title": "Gas price calculation is incorrect due to misaligned time windows",
+    "finding_description": "The `refresh_base_fee` function updates `window_start_time` to the current transaction's timestamp, creating rolling time windows instead of fixed ones. This leads to incorrect gas price adjustments and lower-than-expected fees, as the gas used in a window is not measured correctly.",
+    "attack_scenario": "1. The `refresh_base_fee` function is called multiple times within a short period.\n2. Each call updates `window_start_time` to the current timestamp.\n3. The time window for gas calculation becomes smaller than intended.\n4. The calculated gas price is lower than it should be, as the gas used is averaged over a shorter period.\n5. Relayers are under-compensated for their gas costs.",
+    "fix_description": "The recommendation is to normalize `window_start_time` to the beginning of the window, ensuring that gas usage is measured over a fixed time period.",
+    "primary_file": {
+      "path": "solana/programs/bridge/src/common/state/bridge.rs",
+      "content": "use anchor_lang::prelude::*;
+
+#[account]
+#[derive(Default)]
+pub struct Bridge {
+    pub version: u64,
+    pub owner: Pubkey,
+    pub base_fee: u64,
+    pub window_start_time: u64,
+    pub gas_used_in_window: u64,
+}
+
+impl Bridge {
+    pub fn refresh_base_fee(&mut self, timestamp: u64, gas_config: &GasConfig) -> u64 {
+        let elapsed = timestamp.saturating_sub(self.window_start_time);
+        if elapsed >= gas_config.gas_price_window_seconds {
+            let new_base_fee = self.calculate_base_fee(gas_config);
+            self.base_fee = new_base_fee;
+            self.window_start_time = timestamp;
+            self.gas_used_in_window = 0;
+        }
+        self.base_fee
+    }
+
+    fn calculate_base_fee(&self, gas_config: &GasConfig) -> u64 {
+        let mut new_base_fee = self.base_fee;
+        let gas_target = gas_config.gas_target();
+        if self.gas_used_in_window > gas_target {
+            new_base_fee = self.base_fee.saturating_add(
+                self.base_fee
+                    .saturating_mul(self.gas_used_in_window.saturating_sub(gas_target) as u64)
+                    .saturating_div(gas_target as u64)
+                    .saturating_div(gas_config.gas_price_max_change_denominator as u64),
+            );
+        } else {
+            new_base_fee = self.base_fee.saturating_sub(
+                self.base_fee
+                    .saturating_mul(gas_target.saturating_sub(self.gas_used_in_window) as u64)
+                    .saturating_div(gas_target as u64)
+                    .saturating_div(gas_config.gas_price_max_change_denominator as u64),
+            );
+        }
+        if new_base_fee < gas_config.min_gas_price {
+            return gas_config.min_gas_price;
+        }
+        if new_base_fee > gas_config.max_gas_price {
+            return gas_config.max_gas_price;
+        }
+        new_base_fee
+    }
+}
+
+#[account]
+#[derive(Default)]
+pub struct GasConfig {
+    pub gas_price_window_seconds: u64,
+    pub gas_price_max_change_denominator: u16,
+    pub min_gas_price: u64,
+    pub max_gas_price: u64,
+}",
+      "vulnerable_lines": [
+        16
+      ],
+      "vulnerable_functions": [
+        "refresh_base_fee"
+      ]
+    },
+    "context_files": [],
+    "call_flow": "refresh_base_fee()",
+    "context_hint": "The `refresh_base_fee` function's logic for updating `window_start_time` is flawed. It should normalize the start time to a fixed window to ensure accurate gas price calculations.",
+    "is_vulnerable": true,
+    "expert_notes": "This is a subtle but important vulnerability in the gas price calculation mechanism. The use of rolling time windows leads to inaccurate gas price adjustments, which can result in financial losses for relayers. The fix is to use fixed time windows, which is a standard practice in such calculations."
+  }
+]
