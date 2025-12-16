@@ -6,7 +6,7 @@
   "source_platform": "quantstamp",
   "source_report": "Strata Tranches",
   "source_finding_id": "STR-T-1",
-  "report_url": "https://certificate.quantstamp.com/full/strata-tranches/",
+  "report_url": "https://certificate.quantstamp.com/full/strata-tranches/3c3a4037-2a92-468c-a4f3-5ea498e7b539/index.html",
   "github_repo_url": "https://github.com/Stratapad/tranches-contracts",
   "contest_date": "2025-10-09",
   "severity": "medium",
