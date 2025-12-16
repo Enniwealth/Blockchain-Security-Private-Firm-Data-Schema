@@ -13,7 +13,7 @@
     "context": "staking",
     "is_vulnerable": true,
     "title": "Stream Recipient Can Block Sender's Cancellation by Transferring NFT Directly to Staking Contract",
-    "description": "The SablierStaking contract implements a hook onSablierLockupCancel that is triggered when a stream is cancelled. This hook is designed to handle unstaking of the cancelled stream amount from any active pool. However, the hook reverts if the NFT is not currently staked (poolId == 0). A stream recipient can exploit this by front-running the stream sender's cancellation transaction: the recipient withdraws the streamed balance and sends the Lockup NFT directly to the staking contract (without staking it). When the NFT arrives at the contract, poolId remains 0, causing the cancellation hook to revert with SablierStaking_StreamNotStaked. This denies the stream sender the ability to cancel and recover their remaining unstreamed funds, effectively freezing the sender's capital until the NFT is transferred or staked elsewhere.",
+    "description": "Cancellable streams allow the sender to be able to recover the unstreamed amount. When an NFT is put to staking in the SablierStaking contract, a hook makes it possible to update the staking balance in case the sender cancels the stream. Unfortunately, we notice that when the NFT is owned by the staking contract, but not staked (_streamsLookup[msgSenderAsLockup][streamId].poolId == 0), the cancellation hook reverts.",
     "primary_file": {
       "name": "SablierStaking.sol",
       "path": "src/SablierStaking.sol",

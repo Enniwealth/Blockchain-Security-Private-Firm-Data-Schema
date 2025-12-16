@@ -1,3 +1,4 @@
+//Marked
 [
   {
     "id": "gs_cantina_capricorn_pamm_001",
@@ -24,8 +25,7 @@
       {
         "name": "Numerically Stable Quadratic Form",
         "path": "contracts/PricingEngine.sol",
-        "relevance": "Shows the correct stable form recommended by Cantina",
-        "content": "// STABLE FORM: Uses sqrt(1 + gamma) instead of sqrt(B^2 + epsilon)\n// This keeps the sqrt argument close to 1, avoiding catastrophic cancellation\n//\n// gamma = (4 * A * nC) / B^2\n// amountIn = (2 * nC) / (B * (sqrt(1 + gamma) + 1))\n//\n// This is algebraically equivalent but numerically stable\n//\n// Why it works:\n// 1. Divide 4*A*nC by B twice → ratio close to 1\n// 2. Compute sqrt(1 + small_ratio) → stays in stable range\n// 3. Avoid building B^2 directly → no giant intermediate\n// 4. sqrt doesn't receive huge input → no overflow\n// 5. Subtraction never happens on nearly-equal terms → no underflow\n//\n// Implementation:\nUD60x18 fourAnC = convert(4) * A * nC;\nUD60x18 ratio = fourAnC / B;  // First division\nratio = ratio / B;             // Second division → ratio = 4*A*nC / B^2\nUD60x18 sqrtOne = (UNIT + ratio).sqrt();  // sqrt(1 + ratio)\nUD60x18 denom = B * (sqrtOne + UNIT);\namountIn = (convert(2) * nC) / denom;"
+        "relevance": "Shows the correct stable form recommended by Cantina"
       },
       {
         "name": "Arbitrage Scenario",

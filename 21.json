@@ -1,3 +1,4 @@
+//Marked
 [
   {
     "id": "gs_cantina_tadle_v3_001",
@@ -13,7 +14,7 @@
     "context": "denial_of_service",
     "is_vulnerable": true,
     "title": "Validator Spoofing Allows Arbitrary Address Cooldown Enforcement, Blocking Claims Indefinitely",
-    "description": "The TadleConnectors.claim function accepts a validator parameter from the caller without any authentication or signature verification. This validator address is treated identically to msg.sender for cooldown purposes via _updateClaimTimestamps. An attacker can call claim(token, victimAddress, level) with any address as the validator, forcing that victim to enter a 24-hour cooldown even though they never interacted with the protocol. By repeatedly calling claim with the victim as validator, the attacker can indefinitely prevent the victim from claiming their allocation.",
+    "description": "The claim function inside TadleConnectors treats the validator address supplied by the caller exactly as it treats msg.sender: it verifies a 24‑hour cooldown and then records the current timestamp for both parties through _updateClaimTimestamps. Because there is no authentication or consent check on the validator, an attacker can pick any arbitrary address as the validator and force the cooldown onto that address",
     "primary_file": {
       "name": "TadleConnectors.sol",
       "path": "src/TadleConnectors.sol",
