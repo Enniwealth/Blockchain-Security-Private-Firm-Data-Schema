@@ -1,3 +1,5 @@
+//Marked
+
 [
   {
     "id": "gs_cantina_aztec_barretenberg_001",
@@ -13,7 +15,7 @@
     "context": "zero_knowledge_proof",
     "is_vulnerable": true,
     "title": "Size Constructor byte_array Bypasses Range Constraints - Allows Unconstrained Bytes",
-    "description": "The byte_array size constructor `byte_array(Builder* parent_context, size_t n)` creates n default field elements without applying any range constraints. This allows circuit developers to create 'byte' values that exceed the valid 8-bit range (0-255). The constructor assumes an invariant that bytes won't be modified, but this assumption is: (1) undocumented, (2) error-prone, and (3) violated when developers assign witness values via operator[]. A malicious prover can assign arbitrary large values (256, 512, 1024+) to array positions, and these unconstrained values are treated as valid bytes in conversions to field_t. The circuit verification passes despite the invalid byte values, allowing the prover to inject arbitrary large field elements disguised as bytes.",
+    "description": "The size constructor byte_array(Builder*, size_t n) creates n default field elements without applying any range constraints. This allows creation of "byte" values that exceed the valid 8-bit range (0-255)",
     "primary_file": {
       "name": "byte_array.hpp",
       "path": "barretenberg/cpp/src/barretenberg/dsl/types/byte_array.hpp",
